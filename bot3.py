@@ -8,7 +8,6 @@ from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Update
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiohttp import web
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
@@ -199,23 +198,35 @@ async def ping(request):
 app.router.add_post(WEBHOOK_PATH, handle_webhook)
 app.router.add_get("/ping", ping)
 
+# === Периодическая задача проверки цен ===
+async def periodic_check_prices():
+    while True:
+        try:
+            await check_prices()
+        except Exception as e:
+            logging.error(f"Ошибка в check_prices: {e}")
+        await asyncio.sleep(3600)  # 1 час
+
 # === Запуск ===
 async def on_startup(app):
     global gc, sheet
+    logging.info("Запускаюсь и устанавливаю webhook...")
     await bot.set_webhook(WEBHOOK_URL)
     creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
     gc = gspread.authorize(creds)
     sheet = gc.open("wb_tracker").sheet1
 
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(check_prices, "interval", minutes=60)
-    scheduler.start()
+    app['check_prices_task'] = asyncio.create_task(periodic_check_prices())
+    logging.info("Бот готов.")
 
 async def on_shutdown(app):
+    logging.info("Шатдаун: удаляем webhook и закрываем хранилище...")
     await bot.delete_webhook()
     await dp.storage.close()
     await dp.storage.wait_closed()
+    app['check_prices_task'].cancel()
     executor.shutdown(wait=True)
+    logging.info("Выключение завершено.")
 
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
