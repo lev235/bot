@@ -75,7 +75,13 @@ async def add_item_start(message: types.Message):
 
 @dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'await_artikel')
 async def add_item_artikel(message: types.Message):
-    user_state[message.from_user.id]['artikel'] = message.text.strip()
+    state = user_state.get(message.from_user.id)
+if not state or state.get('step') != 'await_artikel':
+    return await message.reply("Пожалуйста, нажмите «➕ Добавить» сначала.")
+
+state['artikel'] = message.text.strip()
+state['step'] = 'await_price'
+await message.reply("Введите цену в рублях:")
     user_state[message.from_user.id]['step'] = 'await_price'
     await message.reply("Введите цену в рублях:")
 
