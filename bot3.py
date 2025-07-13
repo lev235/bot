@@ -4,9 +4,9 @@ import sys
 import asyncio
 import aiohttp
 
-from aiogram import Bot, Dispatcher, F
-from aiogram.types import Message, CallbackQuery, ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Update
-from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Update
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -35,9 +35,8 @@ sheet = None
 
 # === Telegram Bot ===
 bot = Bot(token=TELEGRAM_TOKEN)
-Bot.set_current(bot)
 storage = MemoryStorage()
-dp = Dispatcher(storage=storage)
+dp = Dispatcher(bot, storage=storage)
 
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 main_kb.add(KeyboardButton("➕ Добавить"), KeyboardButton("📋 Список"))
@@ -59,47 +58,44 @@ async def get_price(nm):
     return None, None
 
 # === Хендлеры ===
-@dp.message(F.text == "/start")
-async def cmd_start(message: Message):
-    await message.answer("Привет! Я отслеживаю цену товара на Wildberries.", reply_markup=main_kb)
+@dp.message_handler(commands=["start"])
+async def cmd_start(message: types.Message):
+    await message.reply("Привет! Я отслеживаю цену товара на Wildberries.", reply_markup=main_kb)
 
-@dp.message(F.text == "➕ Добавить")
-async def add_item_start(message: Message):
+@dp.message_handler(lambda m: m.text == "➕ Добавить")
+async def add_item_start(message: types.Message):
     user_state[message.from_user.id] = {'step': 'await_artikel'}
-    await message.answer("Введите артикул товара (nm ID):")
+    await message.reply("Введите артикул товара (nm ID):")
 
-@dp.message()
-async def universal_handler(message: Message):
-    state = user_state.get(message.from_user.id, {}).get("step")
+@dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get("step") == "await_artikel")
+async def step_artikel(message: types.Message):
+    user_state[message.from_user.id]['artikel'] = message.text.strip()
+    user_state[message.from_user.id]['step'] = 'await_price'
+    await message.reply("Введите цену в рублях:")
 
-    if state == 'await_artikel':
-        user_state[message.from_user.id]['artikel'] = message.text.strip()
-        user_state[message.from_user.id]['step'] = 'await_price'
-        await message.answer("Введите цену в рублях:")
-        return
+@dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get("step") == "await_price")
+async def step_price(message: types.Message):
+    try:
+        price = float(message.text.strip())
+    except:
+        return await message.reply("Неверный формат. Введите число.")
+    data = user_state.pop(message.from_user.id)
+    sheet.append_row([message.from_user.id, data['artikel'], price, '', 'FALSE'])
+    await message.reply("Товар добавлен.", reply_markup=main_kb)
 
-    elif state == 'await_price':
-        try:
-            price = float(message.text.strip())
-        except:
-            return await message.answer("Неверный формат. Введите число.")
-        data = user_state.pop(message.from_user.id)
-        sheet.append_row([message.from_user.id, data['artikel'], price, '', 'FALSE'])
-        await message.answer("Товар добавлен.", reply_markup=main_kb)
-        return
+@dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get("step") == "edit_price")
+async def step_edit_price(message: types.Message):
+    try:
+        new_price = float(message.text.strip())
+    except:
+        return await message.reply("Неверный формат.")
+    data = user_state.pop(message.from_user.id)
+    sheet.update_cell(data['row_idx'], 3, new_price)
+    sheet.update_cell(data['row_idx'], 5, 'FALSE')
+    await message.reply("Цена обновлена.", reply_markup=main_kb)
 
-    elif state == 'edit_price':
-        try:
-            new_price = float(message.text.strip())
-        except:
-            return await message.answer("Неверный формат.")
-        state_data = user_state.pop(message.from_user.id)
-        sheet.update_cell(state_data['row_idx'], 3, new_price)
-        sheet.update_cell(state_data['row_idx'], 5, 'FALSE')
-        await message.answer("Цена обновлена.", reply_markup=main_kb)
-
-@dp.message(F.text == "📋 Список")
-async def show_items(message: Message):
+@dp.message_handler(lambda m: m.text == "📋 Список")
+async def show_items(message: types.Message):
     rows = sheet.get_all_records()
     markup = InlineKeyboardMarkup(row_width=2)
     items = []
@@ -111,12 +107,12 @@ async def show_items(message: Message):
                 InlineKeyboardButton("🗑", callback_data=f"del_{idx}")
             )
     if items:
-        await message.answer("\n".join(items), reply_markup=markup)
+        await message.reply("\n".join(items), reply_markup=markup)
     else:
-        await message.answer("Нет отслеживаемых товаров.", reply_markup=main_kb)
+        await message.reply("Нет отслеживаемых товаров.", reply_markup=main_kb)
 
-@dp.callback_query(F.data.startswith("del_"))
-async def delete_item(callback: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data.startswith("del_"))
+async def delete_item(callback: types.CallbackQuery):
     idx = int(callback.data.split('_')[1])
     try:
         sheet.delete_rows(idx)
@@ -127,8 +123,8 @@ async def delete_item(callback: CallbackQuery):
         logging.warning(f"Ошибка удаления: {e}")
         await callback.answer("Ошибка при удалении.")
 
-@dp.callback_query(F.data.startswith("edit_"))
-async def edit_item(callback: CallbackQuery):
+@dp.callback_query_handler(lambda c: c.data.startswith("edit_"))
+async def edit_item(callback: types.CallbackQuery):
     idx = int(callback.data.split('_')[1])
     row = sheet.row_values(idx)
     user_state[callback.from_user.id] = {'step': 'edit_price', 'row_idx': idx}
@@ -163,10 +159,9 @@ app = web.Application()
 
 async def handle_webhook(request):
     try:
-        Bot.set_current(bot)  # Установка бота в контекст для aiogram
         data = await request.json()
         update = Update(**data)
-        await dp.feed_update(bot, update)
+        await dp.process_update(update)
     except Exception as e:
         logging.exception("Ошибка обработки webhook")
         return web.Response(status=500)
