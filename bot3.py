@@ -26,7 +26,7 @@ WEBHOOK_HOST = f"https://{RENDER_HOST}"
 WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = "0.0.0.0"
-WEBAPP_PORT = int(os.getenv("PORT", 10000))  # рекомендуемый порт для webhook
+WEBAPP_PORT = int(os.getenv("PORT", 10000))  # лучше 10000 или 8443
 
 # === Google Sheets ===
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -160,9 +160,10 @@ app = web.Application()
 async def handle_webhook(request):
     try:
         data = await request.json()
-        await dp.process_update(types.Update(**data))
+        update = types.Update(**data)
+        await dp.process_update(update)
     except Exception as e:
-        logging.exception("Ошибка в webhook:")
+        logging.exception("Ошибка обработки webhook")
         return web.Response(status=500)
     return web.Response(text="OK")
 
@@ -183,8 +184,6 @@ async def on_startup(app):
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_prices, "interval", minutes=60)
     scheduler.start()
-
-    asyncio.create_task(dp.start_polling())  # <-- запуск aiogram вручную в фоне
 
 async def on_shutdown(app):
     await bot.delete_webhook()
