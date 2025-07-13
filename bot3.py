@@ -12,6 +12,7 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+from concurrent.futures import ThreadPoolExecutor
 
 # === Настройки ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -33,6 +34,9 @@ scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/au
 gc = None
 sheet = None
 
+# ThreadPoolExecutor для gspread (блокирующих вызовов)
+executor = ThreadPoolExecutor(max_workers=4)
+
 # === Telegram Bot ===
 bot = Bot(token=TELEGRAM_TOKEN)
 storage = MemoryStorage()
@@ -41,6 +45,27 @@ dp = Dispatcher(bot, storage=storage)
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 main_kb.add(KeyboardButton("➕ Добавить"), KeyboardButton("📋 Список"))
 user_state = {}
+
+# --- Асинхронные обертки для gspread ---
+async def async_append_row(values):
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(executor, sheet.append_row, values)
+
+async def async_update_cell(row, col, value):
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(executor, sheet.update_cell, row, col, value)
+
+async def async_get_all_records():
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(executor, sheet.get_all_records)
+
+async def async_delete_rows(idx):
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(executor, sheet.delete_rows, idx)
+
+async def async_row_values(idx):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(executor, sheet.row_values, idx)
 
 # === Получение цены ===
 async def get_price(nm):
@@ -80,7 +105,7 @@ async def step_price(message: types.Message):
     except:
         return await message.reply("Неверный формат. Введите число.")
     data = user_state.pop(message.from_user.id)
-    sheet.append_row([message.from_user.id, data['artikel'], price, '', 'FALSE'])
+    await async_append_row([message.from_user.id, data['artikel'], price, '', 'FALSE'])
     await message.reply("Товар добавлен.", reply_markup=main_kb)
 
 @dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get("step") == "edit_price")
@@ -90,13 +115,13 @@ async def step_edit_price(message: types.Message):
     except:
         return await message.reply("Неверный формат.")
     data = user_state.pop(message.from_user.id)
-    sheet.update_cell(data['row_idx'], 3, new_price)
-    sheet.update_cell(data['row_idx'], 5, 'FALSE')
+    await async_update_cell(data['row_idx'], 3, new_price)
+    await async_update_cell(data['row_idx'], 5, 'FALSE')
     await message.reply("Цена обновлена.", reply_markup=main_kb)
 
 @dp.message_handler(lambda m: m.text == "📋 Список")
 async def show_items(message: types.Message):
-    rows = sheet.get_all_records()
+    rows = await async_get_all_records()
     markup = InlineKeyboardMarkup(row_width=2)
     items = []
     for idx, row in enumerate(rows, start=2):
@@ -115,7 +140,7 @@ async def show_items(message: types.Message):
 async def delete_item(callback: types.CallbackQuery):
     idx = int(callback.data.split('_')[1])
     try:
-        sheet.delete_rows(idx)
+        await async_delete_rows(idx)
         await callback.answer("Удалено.")
         await callback.message.delete()
         await show_items(callback.message)
@@ -126,14 +151,14 @@ async def delete_item(callback: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data.startswith("edit_"))
 async def edit_item(callback: types.CallbackQuery):
     idx = int(callback.data.split('_')[1])
-    row = sheet.row_values(idx)
+    row = await async_row_values(idx)
     user_state[callback.from_user.id] = {'step': 'edit_price', 'row_idx': idx}
     await callback.answer()
     await callback.message.answer(f"Новая цена для {row[1]} (была: {row[2]}₽):")
 
 # === Проверка цен ===
 async def check_prices():
-    rows = sheet.get_all_records()
+    rows = await async_get_all_records()
     for i, row in enumerate(rows, start=2):
         try:
             uid = int(row["UserID"])
@@ -143,14 +168,14 @@ async def check_prices():
             price, _ = await get_price(artikel)
             if price is None:
                 continue
-            sheet.update_cell(i, 4, price)
+            await async_update_cell(i, 4, price)
             if price <= target and not notified:
                 url = f"https://www.wildberries.ru/catalog/{artikel}/detail.aspx"
                 await bot.send_message(uid, f"🔔 {artikel} подешевел до {price}₽\n{url}")
-                sheet.update_cell(i, 5, 'TRUE')
+                await async_update_cell(i, 5, 'TRUE')
             elif price > target and notified:
-                sheet.update_cell(i, 5, 'FALSE')
-            await asyncio.sleep(0.2)
+                await async_update_cell(i, 5, 'FALSE')
+            await asyncio.sleep(0.2)  # чтобы не спамить запросами
         except Exception as e:
             logging.warning(f"Ошибка: {e}")
 
@@ -161,7 +186,7 @@ async def handle_webhook(request):
     try:
         data = await request.json()
         update = Update(**data)
-        Bot.set_current(bot)  # <--- ВАЖНО: установить текущий бот в контекст
+        Bot.set_current(bot)  # установить текущий бот в контекст
         await dp.process_update(update)
     except Exception as e:
         logging.exception("Ошибка обработки webhook")
@@ -190,6 +215,7 @@ async def on_shutdown(app):
     await bot.delete_webhook()
     await dp.storage.close()
     await dp.storage.wait_closed()
+    executor.shutdown(wait=True)
 
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
