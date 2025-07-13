@@ -4,6 +4,7 @@ import sys
 import asyncio
 import aiohttp
 
+from aiogram.types import Update
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
