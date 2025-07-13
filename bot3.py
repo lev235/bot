@@ -4,6 +4,7 @@ import asyncio
 import os
 import sys
 
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
@@ -35,7 +36,8 @@ sheet = None
 # === Telegram bot ===
 bot = Bot(token=TELEGRAM_TOKEN)
 Bot.set_current(bot)
-dp = Dispatcher(bot)
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 main_kb.add(KeyboardButton("➕ Добавить"), KeyboardButton("📋 Список"))
 
