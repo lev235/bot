@@ -5,6 +5,7 @@ import os
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.dispatcher.webhook import get_new_configured_app
 from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -30,6 +31,7 @@ sheet = gc.open("wb_tracker").sheet1
 
 # === Telegram setup ===
 bot = Bot(token=TELEGRAM_TOKEN)
+Bot.set_current(bot)  # <<< вот эта строка добавлена
 dp = Dispatcher(bot)
 
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -147,16 +149,7 @@ async def check_prices():
         elif base_price > target_price and notified:
             sheet.update_cell(i, 5, 'FALSE')
 
-# === Webhook обработчик ===
-from aiogram.types import Update
-
-async def handle_webhook(request):
-    data = await request.json()
-    update = Update(**data)
-    await dp.process_update(update)
-    return web.Response()
-
-# === Запуск приложения ===
+# === Webhook запуск ===
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
     scheduler = AsyncIOScheduler()
@@ -169,7 +162,7 @@ async def on_shutdown(app):
 app = web.Application()
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
-app.router.add_post(WEBHOOK_PATH, handle_webhook)
+app.router.add_post(WEBHOOK_PATH, get_new_configured_app(dispatcher=dp, path=WEBHOOK_PATH))
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
