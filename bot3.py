@@ -28,22 +28,9 @@ WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = int(os.environ.get("PORT", 8000))
 
 # === Google Sheets ===
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 gc = None
 sheet = None
-
-async def on_startup(app):
-    global gc, sheet
-    logging.info(f"Устанавливаю webhook: {WEBHOOK_URL}")
-    await bot.set_webhook(WEBHOOK_URL)
-    
-    creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-    gc = gspread.authorize(creds)
-    sheet = gc.open("wb_tracker").sheet1
-    
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(check_prices, "interval", minutes=1)
-    scheduler.start()
-sheet = gc.open("wb_tracker").sheet1
 
 # === Telegram bot ===
 bot = Bot(token=TELEGRAM_TOKEN)
@@ -93,12 +80,14 @@ async def add_item_price(message: types.Message):
     except:
         return await message.reply("Неверный формат. Введите число.")
     data = user_state[message.from_user.id]
+    global sheet
     sheet.append_row([message.from_user.id, data['artikel'], price, '', 'FALSE'])
     await message.reply("Товар добавлен.", reply_markup=main_kb)
     user_state.pop(message.from_user.id, None)
 
 @dp.message_handler(lambda m: m.text == "📋 Список")
 async def show_items(message: types.Message):
+    global sheet
     rows = sheet.get_all_records()
     markup = InlineKeyboardMarkup(row_width=2)
     items = []
@@ -115,6 +104,7 @@ async def show_items(message: types.Message):
 @dp.callback_query_handler(lambda c: c.data.startswith('del_'))
 async def delete_item(callback: types.CallbackQuery):
     idx = int(callback.data.split('_')[1])
+    global sheet
     sheet.delete_rows(idx)
     await callback.answer("Удалено.")
     await callback.message.delete()
@@ -122,6 +112,7 @@ async def delete_item(callback: types.CallbackQuery):
 @dp.callback_query_handler(lambda c: c.data.startswith('edit_'))
 async def edit_item(callback: types.CallbackQuery):
     idx = int(callback.data.split('_')[1])
+    global sheet
     row = sheet.row_values(idx)
     user_state[callback.from_user.id] = {'step': 'edit_price', 'row_idx': idx, 'artikel': row[1]}
     await callback.answer()
@@ -134,12 +125,14 @@ async def update_price(message: types.Message):
     except:
         return await message.reply("Неверный формат.")
     state = user_state.pop(message.from_user.id)
+    global sheet
     sheet.update_cell(state['row_idx'], 3, new_price)
     sheet.update_cell(state['row_idx'], 5, 'FALSE')
     await message.reply("Цена обновлена.", reply_markup=main_kb)
 
 # === Проверка цен ===
 async def check_prices():
+    global sheet
     rows = sheet.get_all_records()
     for i, row in enumerate(rows, start=2):
         try:
@@ -199,6 +192,7 @@ async def handle_broadcast_confirm(callback: types.CallbackQuery):
         return
 
     sent, failed = 0, 0
+    global sheet
     rows = sheet.get_all_records()
     for row in rows:
         uid = int(row["UserID"])
@@ -218,8 +212,14 @@ async def handle_broadcast_confirm(callback: types.CallbackQuery):
 
 # === Webhook и сервер ===
 async def on_startup(app):
+    global gc, sheet
     logging.info(f"Устанавливаю webhook: {WEBHOOK_URL}")
     await bot.set_webhook(WEBHOOK_URL)
+    
+    creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+    gc = gspread.authorize(creds)
+    sheet = gc.open("wb_tracker").sheet1
+    
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_prices, "interval", minutes=1)
     scheduler.start()
