@@ -1,0 +1,13 @@
+services:
+  - type: web
+    name: wb-price-tracker
+    env: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot3.py
+    envVars:
+      - key: TELEGRAM_TOKEN
+        value: 7695770485:AAHzdIlBP2Az1i13Em2c26_7C6h22dS0y2A
+      - key: GOOGLE_CREDS
+        value: credentials.json
