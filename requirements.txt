@@ -1,0 +1,6 @@
+aiogram==2.25.2
+requests
+gspread
+oauth2client
+apscheduler
+aiohttp
