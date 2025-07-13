@@ -169,6 +169,12 @@ async def handle_webhook(request: web.Request):
     return web.Response(text="OK")
 
 app.router.add_post(WEBHOOK_PATH, handle_webhook)
+
+
+async def handle_ping(request):
+    return web.Response(text="OK")
+
+# регистрация маршрута должна идти после определения функции
 app.router.add_get('/ping', handle_ping)
 
 if __name__ == '__main__':
