@@ -188,7 +188,14 @@ async def handle_broadcast_confirm(callback: types.CallbackQuery):
     state = user_state.get(callback.from_user.id)
     if callback.data == 'broadcast_cancel':
         user_state.pop(callback.from_user.id, None)
-        await callback.message.edit_text("Рассылка отменена.")
+        # Попытка корректно отредактировать или заменить сообщение об отмене
+        try:
+            if callback.message.text:
+                await callback.message.edit_text("Рассылка отменена.")
+            else:
+                await callback.message.edit_caption("Рассылка отменена.")
+        except Exception:
+            await callback.message.answer("Рассылка отменена.")
         return
 
     sent, failed = 0, 0
@@ -208,16 +215,14 @@ async def handle_broadcast_confirm(callback: types.CallbackQuery):
             logging.warning(f"Ошибка рассылки {uid}: {e}")
             failed += 1
 
-    # Попытка обновить сообщение корректно в зависимости от типа содержимого
+    # Попытка обновить сообщение с результатом
     try:
         if callback.message.text:
             await callback.message.edit_text(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
         else:
-            # Если текста нет, то пробуем редактировать подпись (caption)
             await callback.message.edit_caption(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
     except Exception as e:
         logging.warning(f"Не удалось обновить сообщение: {e}")
-        # Если редактировать не удалось — отправляем новое сообщение с результатом
         await callback.message.answer(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
 
     user_state.pop(callback.from_user.id, None)
