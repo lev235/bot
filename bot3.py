@@ -17,16 +17,16 @@ from oauth2client.service_account import ServiceAccountCredentials
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_ID = 6882817679
 
-WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_HOSTNAME")
-if not WEBHOOK_HOST:
+RENDER_HOST = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+if not RENDER_HOST:
     logging.error("RENDER_EXTERNAL_HOSTNAME не задан")
     sys.exit(1)
 
-WEBHOOK_HOST = f"https://{WEBHOOK_HOST}"
+WEBHOOK_HOST = f"https://{RENDER_HOST}"
 WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = "0.0.0.0"
-WEBAPP_PORT = int(os.getenv("PORT", 8000))
+WEBAPP_PORT = int(os.getenv("PORT", 10000))  # рекомендуемый порт для webhook
 
 # === Google Sheets ===
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -57,7 +57,7 @@ async def get_price(nm):
         logging.warning(f"Ошибка при получении цены: {e}")
     return None, None
 
-# === Команды ===
+# === Хендлеры ===
 @dp.message_handler(commands=["start"])
 async def start(message: types.Message):
     await message.reply("Привет! Я отслеживаю цену товара на Wildberries.", reply_markup=main_kb)
@@ -154,81 +154,15 @@ async def check_prices():
         except Exception as e:
             logging.warning(f"Ошибка: {e}")
 
-# === Рассылка ===
-@dp.message_handler(commands=['broadcast'])
-async def broadcast_start(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    user_state[message.from_user.id] = {'step': 'await_broadcast'}
-    await message.reply("Отправь текст, фото или видео:")
-
-@dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'await_broadcast', content_types=types.ContentType.ANY)
-async def preview_broadcast(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
-        return
-    state = {'step': 'confirm_broadcast'}
-    markup = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("✅ Отправить", callback_data='broadcast_confirm'),
-        InlineKeyboardButton("❌ Отменить", callback_data='broadcast_cancel')
-    )
-    if message.text:
-        state.update({'type': 'text', 'text': message.text})
-        await message.reply(f"Предпросмотр:\n{message.text}", reply_markup=markup)
-    elif message.photo:
-        state.update({'type': 'photo', 'file_id': message.photo[-1].file_id, 'caption': message.caption or ''})
-        await bot.send_photo(message.chat.id, message.photo[-1].file_id, caption=message.caption, reply_markup=markup)
-    elif message.video:
-        state.update({'type': 'video', 'file_id': message.video.file_id, 'caption': message.caption or ''})
-        await bot.send_video(message.chat.id, message.video.file_id, caption=message.caption, reply_markup=markup)
-    user_state[message.from_user.id] = state
-
-@dp.callback_query_handler(lambda c: c.data in ['broadcast_confirm', 'broadcast_cancel'])
-async def handle_broadcast_confirm(callback: types.CallbackQuery):
-    if callback.from_user.id != ADMIN_ID:
-        return
-    state = user_state.pop(callback.from_user.id, None)
-    if not state:
-        return
-
-    if callback.data == 'broadcast_cancel':
-        await callback.message.edit_text("Рассылка отменена.")
-        return
-
-    sent, failed = 0, 0
-    for row in sheet.get_all_records():
-        uid = int(row["UserID"])
-        try:
-            if state["type"] == "text":
-                await bot.send_message(uid, state["text"])
-            elif state["type"] == "photo":
-                await bot.send_photo(uid, state["file_id"], caption=state["caption"])
-            elif state["type"] == "video":
-                await bot.send_video(uid, state["file_id"], caption=state["caption"])
-            sent += 1
-        except Exception as e:
-            logging.warning(f"Ошибка рассылки {uid}: {e}")
-            failed += 1
-
-    try:
-        if callback.message.text:
-            await callback.message.edit_text(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
-        else:
-            await callback.message.edit_caption(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
-    except Exception as e:
-        logging.warning(f"Не удалось обновить сообщение: {e}")
-        await callback.message.answer(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
-
 # === Webhook-сервер ===
 app = web.Application()
 
 async def handle_webhook(request):
     try:
         data = await request.json()
-        Bot.set_current(bot)
-        update = types.Update(**data)
-        await dp.process_update(update)
+        await dp.process_update(types.Update(**data))
     except Exception as e:
-        logging.error(f"Ошибка обновления: {e}")
+        logging.exception("Ошибка в webhook:")
         return web.Response(status=500)
     return web.Response(text="OK")
 
@@ -238,6 +172,7 @@ async def ping(request):
 app.router.add_post(WEBHOOK_PATH, handle_webhook)
 app.router.add_get("/ping", ping)
 
+# === Запуск ===
 async def on_startup(app):
     global gc, sheet
     await bot.set_webhook(WEBHOOK_URL)
@@ -246,11 +181,15 @@ async def on_startup(app):
     sheet = gc.open("wb_tracker").sheet1
 
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(check_prices, trigger="interval", hours=1)
+    scheduler.add_job(check_prices, "interval", minutes=60)
     scheduler.start()
+
+    asyncio.create_task(dp.start_polling())  # <-- запуск aiogram вручную в фоне
 
 async def on_shutdown(app):
     await bot.delete_webhook()
+    await dp.storage.close()
+    await dp.storage.wait_closed()
 
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
