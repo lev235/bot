@@ -1,137 +1,259 @@
 import logging
-import asyncio
 import os
-from aiogram import Bot, Dispatcher, types
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
-from aiohttp import web
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-import gspread
-from oauth2client.service_account import ServiceAccountCredentials
+import sys
+import asyncio
 import aiohttp
 
-# --- Настройки ---
+from aiogram import Bot, Dispatcher, types
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.contrib.fsm_storage.memory import MemoryStorage
+from aiohttp import web
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
+
+# === Настройки ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-GOOGLE_SHEET_NAME = "wb_tracker"
+ADMIN_ID = 6882817679
+
+WEBHOOK_HOST = os.getenv("RENDER_EXTERNAL_HOSTNAME")
+if not WEBHOOK_HOST:
+    logging.error("RENDER_EXTERNAL_HOSTNAME не задан")
+    sys.exit(1)
+
+WEBHOOK_HOST = f"https://{WEBHOOK_HOST}"
+WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
+WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = "0.0.0.0"
-WEBAPP_PORT = int(os.environ.get("PORT", 10000))
+WEBAPP_PORT = int(os.getenv("PORT", 8000))
 
-# --- Логгинг ---
-logging.basicConfig(level=logging.INFO)
-
-# --- Инициализация бота и диспетчера ---
-bot = Bot(token=TELEGRAM_TOKEN)
-dp = Dispatcher(bot)
-
-# --- Google Sheets ---
+# === Google Sheets ===
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-credentials = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-client = gspread.authorize(credentials)
-sheet = client.open(GOOGLE_SHEET_NAME).sheet1
+gc = None
+sheet = None
 
-# --- Хранилище задач пользователей ---
-user_tasks = {}
+# === Telegram Bot ===
+bot = Bot(token=TELEGRAM_TOKEN)
+storage = MemoryStorage()
+dp = Dispatcher(bot, storage=storage)
 
-# --- Команды ---
-@dp.message_handler(commands=["start"])
-async def start(message: types.Message):
-    keyboard = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("➕ Добавить товар", callback_data="add_item")
-    )
-    await message.answer("Привет! Я буду следить за ценами на Wildberries для тебя.", reply_markup=keyboard)
+main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
+main_kb.add(KeyboardButton("➕ Добавить"), KeyboardButton("📋 Список"))
+user_state = {}
 
-@dp.callback_query_handler(lambda c: c.data == "add_item")
-async def add_item(callback_query: types.CallbackQuery):
-    await bot.send_message(callback_query.from_user.id, "Введите ссылку на товар:")
-    user_tasks[callback_query.from_user.id] = {"step": "waiting_for_link"}
-    await bot.answer_callback_query(callback_query.id)
-
-@dp.message_handler()
-async def handle_message(message: types.Message):
-    user_id = message.from_user.id
-    if user_id in user_tasks:
-        step = user_tasks[user_id].get("step")
-        if step == "waiting_for_link":
-            user_tasks[user_id]["link"] = message.text
-            user_tasks[user_id]["step"] = "waiting_for_price"
-            await message.answer("Введите желаемую цену:")
-        elif step == "waiting_for_price":
-            try:
-                price = float(message.text)
-                link = user_tasks[user_id]["link"]
-                sheet.append_row([str(user_id), link, price])
-                await message.answer("✅ Товар добавлен! Я начну отслеживание.")
-                del user_tasks[user_id]
-            except ValueError:
-                await message.answer("Пожалуйста, введите число.")
-    else:
-        await message.answer("Нажмите /start, чтобы начать.")
-
-# --- Проверка цен ---
-async def check_prices():
-    records = sheet.get_all_records()
-    for row in records:
-        user_id = row["user_id"]
-        link = row["link"]
-        target_price = float(row["price"])
-
-        current_price = await get_wb_price(link)
-        if current_price is not None and current_price <= target_price:
-            try:
-                await bot.send_message(user_id, f"💸 Цена на товар упала до {current_price}!\n{link}")
-            except Exception as e:
-                logging.warning(f"Ошибка при отправке сообщения пользователю {user_id}: {e}")
-
-# --- Получение цены с Wildberries ---
-async def get_wb_price(link):
+# === Получение цены ===
+async def get_price(nm):
     try:
+        url = f'https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm}'
         async with aiohttp.ClientSession() as session:
-            async with session.get(link, timeout=10) as resp:
-                text = await resp.text()
-                import re
-                match = re.search(r'"price":\s?(\d+)', text)
-                if match:
-                    return float(match.group(1)) / 100
+            async with session.get(url, timeout=10) as resp:
+                data = await resp.json()
+                products = data.get('data', {}).get('products')
+                if products:
+                    item = products[0]
+                    return item.get('priceU', 0) // 100, item.get('salePriceU', item.get('priceU', 0)) // 100
     except Exception as e:
         logging.warning(f"Ошибка при получении цены: {e}")
-    return None
+    return None, None
 
-# --- Планировщик ---
-scheduler = AsyncIOScheduler()
-scheduler.add_job(check_prices, "interval", minutes=1)
-scheduler.start()
+# === Команды ===
+@dp.message_handler(commands=["start"])
+async def start(message: types.Message):
+    await message.reply("Привет! Я отслеживаю цену товара на Wildberries.", reply_markup=main_kb)
 
-# --- Webhook ---
+@dp.message_handler(lambda m: m.text == "➕ Добавить")
+async def add_item_start(message: types.Message):
+    user_state[message.from_user.id] = {'step': 'await_artikel'}
+    await message.reply("Введите артикул товара (nm ID):")
+
+@dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'await_artikel')
+async def add_item_artikel(message: types.Message):
+    user_state[message.from_user.id]['artikel'] = message.text.strip()
+    user_state[message.from_user.id]['step'] = 'await_price'
+    await message.reply("Введите цену в рублях:")
+
+@dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'await_price')
+async def add_item_price(message: types.Message):
+    try:
+        price = float(message.text.strip())
+    except:
+        return await message.reply("Неверный формат. Введите число.")
+    data = user_state.pop(message.from_user.id)
+    sheet.append_row([message.from_user.id, data['artikel'], price, '', 'FALSE'])
+    await message.reply("Товар добавлен.", reply_markup=main_kb)
+
+@dp.message_handler(lambda m: m.text == "📋 Список")
+async def show_items(message: types.Message):
+    rows = sheet.get_all_records()
+    markup = InlineKeyboardMarkup(row_width=2)
+    items = []
+    for idx, row in enumerate(rows, start=2):
+        if int(row['UserID']) == message.from_user.id:
+            items.append(f"📦 {row['Artikel']} ≤ {row['TargetPrice']}₽ (посл.: {row['LastPrice'] or '–'})")
+            markup.add(
+                InlineKeyboardButton("✏️", callback_data=f"edit_{idx}"),
+                InlineKeyboardButton("🗑", callback_data=f"del_{idx}")
+            )
+    if items:
+        await message.reply("\n".join(items), reply_markup=markup)
+    else:
+        await message.reply("Нет отслеживаемых товаров.", reply_markup=main_kb)
+
+@dp.callback_query_handler(lambda c: c.data.startswith('del_'))
+async def delete_item(callback: types.CallbackQuery):
+    idx = int(callback.data.split('_')[1])
+    try:
+        sheet.delete_rows(idx)
+        await callback.answer("Удалено.")
+        await callback.message.delete()
+        await show_items(callback.message)
+    except Exception as e:
+        logging.warning(f"Ошибка удаления: {e}")
+        await callback.answer("Ошибка при удалении.")
+
+@dp.callback_query_handler(lambda c: c.data.startswith('edit_'))
+async def edit_item(callback: types.CallbackQuery):
+    idx = int(callback.data.split('_')[1])
+    row = sheet.row_values(idx)
+    user_state[callback.from_user.id] = {'step': 'edit_price', 'row_idx': idx}
+    await callback.answer()
+    await callback.message.answer(f"Новая цена для {row[1]} (была: {row[2]}₽):")
+
+@dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'edit_price')
+async def update_price(message: types.Message):
+    try:
+        new_price = float(message.text.strip())
+    except:
+        return await message.reply("Неверный формат.")
+    state = user_state.pop(message.from_user.id)
+    sheet.update_cell(state['row_idx'], 3, new_price)
+    sheet.update_cell(state['row_idx'], 5, 'FALSE')
+    await message.reply("Цена обновлена.", reply_markup=main_kb)
+
+# === Проверка цен ===
+async def check_prices():
+    rows = sheet.get_all_records()
+    for i, row in enumerate(rows, start=2):
+        try:
+            uid = int(row["UserID"])
+            artikel = row["Artikel"]
+            target = float(row["TargetPrice"])
+            notified = row["Notified"] == "TRUE"
+            price, _ = await get_price(artikel)
+            if price is None:
+                continue
+            sheet.update_cell(i, 4, price)
+            if price <= target and not notified:
+                url = f"https://www.wildberries.ru/catalog/{artikel}/detail.aspx"
+                await bot.send_message(uid, f"🔔 {artikel} подешевел до {price}₽\n{url}")
+                sheet.update_cell(i, 5, 'TRUE')
+            elif price > target and notified:
+                sheet.update_cell(i, 5, 'FALSE')
+            await asyncio.sleep(0.2)
+        except Exception as e:
+            logging.warning(f"Ошибка: {e}")
+
+# === Рассылка ===
+@dp.message_handler(commands=['broadcast'])
+async def broadcast_start(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    user_state[message.from_user.id] = {'step': 'await_broadcast'}
+    await message.reply("Отправь текст, фото или видео:")
+
+@dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'await_broadcast', content_types=types.ContentType.ANY)
+async def preview_broadcast(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    state = {'step': 'confirm_broadcast'}
+    markup = InlineKeyboardMarkup().add(
+        InlineKeyboardButton("✅ Отправить", callback_data='broadcast_confirm'),
+        InlineKeyboardButton("❌ Отменить", callback_data='broadcast_cancel')
+    )
+    if message.text:
+        state.update({'type': 'text', 'text': message.text})
+        await message.reply(f"Предпросмотр:\n{message.text}", reply_markup=markup)
+    elif message.photo:
+        state.update({'type': 'photo', 'file_id': message.photo[-1].file_id, 'caption': message.caption or ''})
+        await bot.send_photo(message.chat.id, message.photo[-1].file_id, caption=message.caption, reply_markup=markup)
+    elif message.video:
+        state.update({'type': 'video', 'file_id': message.video.file_id, 'caption': message.caption or ''})
+        await bot.send_video(message.chat.id, message.video.file_id, caption=message.caption, reply_markup=markup)
+    user_state[message.from_user.id] = state
+
+@dp.callback_query_handler(lambda c: c.data in ['broadcast_confirm', 'broadcast_cancel'])
+async def handle_broadcast_confirm(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
+        return
+    state = user_state.pop(callback.from_user.id, None)
+    if not state:
+        return
+
+    if callback.data == 'broadcast_cancel':
+        await callback.message.edit_text("Рассылка отменена.")
+        return
+
+    sent, failed = 0, 0
+    for row in sheet.get_all_records():
+        uid = int(row["UserID"])
+        try:
+            if state["type"] == "text":
+                await bot.send_message(uid, state["text"])
+            elif state["type"] == "photo":
+                await bot.send_photo(uid, state["file_id"], caption=state["caption"])
+            elif state["type"] == "video":
+                await bot.send_video(uid, state["file_id"], caption=state["caption"])
+            sent += 1
+        except Exception as e:
+            logging.warning(f"Ошибка рассылки {uid}: {e}")
+            failed += 1
+
+    try:
+        if callback.message.text:
+            await callback.message.edit_text(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
+        else:
+            await callback.message.edit_caption(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
+    except Exception as e:
+        logging.warning(f"Не удалось обновить сообщение: {e}")
+        await callback.message.answer(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
+
+# === Webhook-сервер ===
+app = web.Application()
+
+@app.post(WEBHOOK_PATH)
 async def handle_webhook(request):
     try:
         data = await request.json()
+        Bot.set_current(bot)
         update = types.Update(**data)
         await dp.process_update(update)
-        return web.Response(text="OK")
     except Exception as e:
-        logging.exception("Ошибка обработки webhook")
+        logging.error(f"Ошибка обновления: {e}")
         return web.Response(status=500)
+    return web.Response(text="OK")
 
-# --- Ping (для UptimeRobot) ---
-async def handle_ping(request):
-    return web.Response(text="pong")
+@app.get("/ping")
+async def ping(request):
+    return web.Response(text="OK")
 
-# --- Запуск приложения ---
-async def main():
-    app = web.Application()
-    app.router.add_post(f"/webhook/{TELEGRAM_TOKEN}", handle_webhook)
-    app.router.add_get("/ping", handle_ping)
+async def on_startup(app):
+    global gc, sheet
+    await bot.set_webhook(WEBHOOK_URL)
+    creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+    gc = gspread.authorize(creds)
+    sheet = gc.open("wb_tracker").sheet1
 
-    await bot.set_webhook(f"{WEBHOOK_URL}/webhook/{TELEGRAM_TOKEN}")
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(check_prices, trigger="interval", hours=1)
+    scheduler.start()
 
-    runner = web.AppRunner(app)
-    await runner.setup()
-    site = web.TCPSite(runner, WEBAPP_HOST, WEBAPP_PORT)
-    await site.start()
+async def on_shutdown(app):
+    await bot.delete_webhook()
 
-    logging.info("Бот запущен.")
-    while True:
-        await asyncio.sleep(3600)
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    logging.basicConfig(level=logging.INFO)
+    web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
