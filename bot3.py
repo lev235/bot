@@ -12,7 +12,7 @@ import aiohttp
 # --- Настройки ---
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
-GOOGLE_SHEET_NAME = "wb_prices"
+GOOGLE_SHEET_NAME = "wb_tracker"
 WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = int(os.environ.get("PORT", 10000))
 
