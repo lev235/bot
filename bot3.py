@@ -257,8 +257,8 @@ app.on_shutdown.append(on_shutdown)
 async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
-        Bot.set_current(bot)  # обязательно!
-        update = types.Update.to_object(data)
+        Bot.set_current(bot)  # важно для контекста
+        update = types.Update(**data)
         await dp.process_update(update)
     except Exception as e:
         logging.error(f"Ошибка при обработке обновления: {e}")
