@@ -162,7 +162,13 @@ async def on_shutdown(app):
 app = web.Application()
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
-app.router.add_post(WEBHOOK_PATH, get_new_configured_app(dispatcher=dp, path=WEBHOOK_PATH))
+async def handle_webhook(request: web.Request):
+    data = await request.json()
+    update = types.Update(**data)
+    await dp.process_update(update)
+    return web.Response(text="OK")
+
+app.router.add_post(WEBHOOK_PATH, handle_webhook)
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
