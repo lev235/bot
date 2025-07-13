@@ -211,14 +211,30 @@ async def handle_broadcast_action(callback_query: types.CallbackQuery):
     action = callback_query.data
     state = user_state.get(callback_query.from_user.id, {})
 
+    if state.get('step') != 'confirm_broadcast':
+        await callback_query.answer("Рассылка уже завершена или отменена.", show_alert=True)
+        return
+
     if action == 'broadcast_cancel':
         user_state.pop(callback_query.from_user.id, None)
-        await callback_query.message.edit_text("Рассылка отменена.")
+        try:
+            if state.get('type') == 'text':
+                await callback_query.message.edit_text("Рассылка отменена.")
+            else:
+                await callback_query.message.edit_caption("Рассылка отменена.")
+        except Exception:
+            pass
         return
 
     if action == 'broadcast_edit':
         user_state[callback_query.from_user.id]['step'] = 'await_broadcast_text'
-        await callback_query.message.edit_text("Введите новый текст или медиа для рассылки:")
+        try:
+            if state.get('type') == 'text':
+                await callback_query.message.edit_text("Введите новый текст или медиа для рассылки:")
+            else:
+                await callback_query.message.edit_caption("Введите новый текст или медиа для рассылки:")
+        except Exception:
+            pass
         return
 
     if action == 'broadcast_confirm':
@@ -237,7 +253,15 @@ async def handle_broadcast_action(callback_query: types.CallbackQuery):
             except Exception as e:
                 logging.warning(f"Ошибка отправки {user_id}: {e}")
                 failed += 1
-        await callback_query.message.edit_text(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
+
+        try:
+            if state.get('type') == 'text':
+                await callback_query.message.edit_text(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
+            else:
+                await callback_query.message.edit_caption(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
+        except Exception:
+            pass
+
         user_state.pop(callback_query.from_user.id, None)
 
 # === Webhook ===
