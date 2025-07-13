@@ -252,7 +252,7 @@ async def on_startup(app):
     sheet = gc.open("wb_tracker").sheet1
     
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(check_prices, "interval", minutes=1)
+    scheduler.add_job(check_prices, trigger="interval", minutes=1)
     scheduler.start()
 
 async def on_shutdown(app):
