@@ -2,6 +2,7 @@ import logging
 import requests
 import asyncio
 import os
+import sys
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
@@ -15,9 +16,14 @@ from oauth2client.service_account import ServiceAccountCredentials
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_ID = 6882817679  # замени на свой user_id
 
-WEBHOOK_HOST = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}"
+WEBHOOK_HOST = os.getenv('RENDER_EXTERNAL_HOSTNAME')
+if not WEBHOOK_HOST:
+    logging.error("Ошибка: переменная окружения RENDER_EXTERNAL_HOSTNAME не задана!")
+    sys.exit(1)
+WEBHOOK_HOST = f"https://{WEBHOOK_HOST}"
 WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
+
 WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = int(os.environ.get("PORT", 8000))
 
@@ -200,6 +206,7 @@ async def handle_broadcast_confirm(callback: types.CallbackQuery):
 
 # === Webhook и сервер ===
 async def on_startup(app):
+    logging.info(f"Устанавливаю webhook: {WEBHOOK_URL}")
     await bot.set_webhook(WEBHOOK_URL)
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_prices, "interval", minutes=1)
@@ -215,7 +222,7 @@ app.on_shutdown.append(on_shutdown)
 async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
-        logging.info(f"Получено обновление: {data}")  # 👈 добавь лог
+        logging.info(f"Получено обновление: {data}")
         Bot.set_current(bot)
         update = types.Update(**data)
         await dp.process_update(update)
