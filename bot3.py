@@ -235,4 +235,5 @@ app.on_startup.append(lambda app: asyncio.create_task(periodic_check_prices()))
 
 if __name__ == "__main__":
     logging.info("Запускаю aiohttp сервер...")
+    logging.info(f"Открытие сервера на порту: {WEBAPP_PORT}")
     web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
