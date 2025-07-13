@@ -232,6 +232,10 @@ app.router.add_get("/ping", handle_ping)
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 app.on_startup.append(lambda app: asyncio.create_task(periodic_check_prices()))
+async def handle_root(request):
+    return web.Response(text="Bot is running")
+
+app.router.add_get("/", handle_root)
 
 if __name__ == "__main__":
     logging.info("Запускаю aiohttp сервер...")
