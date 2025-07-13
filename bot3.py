@@ -3,6 +3,7 @@ import requests
 import asyncio
 import os
 import sys
+import aiohttp
 
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram import Bot, Dispatcher, types
@@ -44,20 +45,22 @@ main_kb.add(KeyboardButton("➕ Добавить"), KeyboardButton("📋 Спи�
 user_state = {}
 
 # === Получение цены ===
-def get_price(nm):
+
+async def get_price(nm):
     try:
         url = f'https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm}'
-        resp = requests.get(url)
-        data = resp.json()
-        products = data.get('data', {}).get('products')
-        if products:
-            item = products[0]
-            priceU = item.get('priceU', 0)
-            saleU = item.get('salePriceU', priceU)
-            return priceU // 100, saleU // 100
-    except:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url, timeout=10) as resp:
+                data = await resp.json()
+                products = data.get('data', {}).get('products')
+                if products:
+                    item = products[0]
+                    priceU = item.get('priceU', 0)
+                    saleU = item.get('salePriceU', priceU)
+                    return priceU // 100, saleU // 100
+    except Exception as e:
+        logging.warning(f"Ошибка при получении цены: {e}")
         return None, None
-    return None, None
 
 # === Команды ===
 @dp.message_handler(commands=["start"])
@@ -142,7 +145,7 @@ async def check_prices():
             artikel = row["Artikel"]
             target = float(row["TargetPrice"])
             notified = row["Notified"] == "TRUE"
-            price, _ = get_price(artikel)
+            price, _ = await get_price(artikel)
             if price is None:
                 continue
             sheet.update_cell(i, 4, price)
