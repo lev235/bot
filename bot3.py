@@ -117,9 +117,14 @@ async def show_items(message: types.Message):
 async def delete_item(callback: types.CallbackQuery):
     idx = int(callback.data.split('_')[1])
     global sheet
-    sheet.delete_rows(idx)
-    await callback.answer("Удалено.")
-    await callback.message.delete()
+    try:
+        sheet.delete_rows(idx)
+        await callback.answer("Удалено.")
+        await callback.message.delete()
+        await show_items(callback.message)
+    except Exception as e:
+        logging.warning(f"Ошибка удаления: {e}")
+        await callback.answer("Ошибка при удалении.")
 
 @dp.callback_query_handler(lambda c: c.data.startswith('edit_'))
 async def edit_item(callback: types.CallbackQuery):
@@ -200,7 +205,6 @@ async def handle_broadcast_confirm(callback: types.CallbackQuery):
         return
     state = user_state.get(callback.from_user.id)
     if callback.data == 'broadcast_cancel':
-        user_state.pop(callback.from_user.id, None)
         await callback.message.edit_text("Рассылка отменена.")
         return
 
