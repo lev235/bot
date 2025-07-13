@@ -34,7 +34,7 @@ WEBAPP_PORT = int(os.getenv("PORT", 10000))
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 credentials = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
 gc = gspread.authorize(credentials)
-sheet = gc.open("WildberriesTracker").sheet1  # Имя вашей таблицы
+sheet = gc.open("wb_tracker").sheet1  # Имя вашей таблицы
 
 executor = ThreadPoolExecutor(max_workers=4)
 
