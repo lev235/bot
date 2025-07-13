@@ -161,6 +161,7 @@ async def handle_webhook(request):
     try:
         data = await request.json()
         update = Update(**data)
+        Bot.set_current(bot)  # <--- ВАЖНО: установить текущий бот в контекст
         await dp.process_update(update)
     except Exception as e:
         logging.exception("Ошибка обработки webhook")
