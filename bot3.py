@@ -215,6 +215,7 @@ async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
         update = types.Update.to_object(data)
+        Bot.set_current(bot)  # 👈 добавь это здесь
         await dp.process_update(update)
     except Exception as e:
         logging.error(f"Ошибка при обработке обновления: {e}")
