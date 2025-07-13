@@ -163,9 +163,13 @@ app = web.Application()
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 async def handle_webhook(request: web.Request):
-    data = await request.json()
-    update = types.Update(**data)
-    await dp.process_update(update)
+    try:
+        data = await request.json()
+        update = types.Update.to_object(data)
+        await dp.process_update(update)
+    except Exception as e:
+        logging.error(f"Ошибка при обработке обновления: {e}")
+        return web.Response(status=500)
     return web.Response(text="OK")
 
 app.router.add_post(WEBHOOK_PATH, handle_webhook)
