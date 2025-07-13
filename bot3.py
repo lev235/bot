@@ -5,13 +5,15 @@ import asyncio
 import aiohttp
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, Update
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiohttp import web
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 from concurrent.futures import ThreadPoolExecutor
+
+logging.basicConfig(level=logging.INFO)
 
 # === Настройки ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
@@ -28,9 +30,12 @@ WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = int(os.getenv("PORT", 10000))
 
+# Google Sheets
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-gc = None
-sheet = None
+credentials = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+gc = gspread.authorize(credentials)
+sheet = gc.open("WildberriesTracker").sheet1  # Имя вашей таблицы
+
 executor = ThreadPoolExecutor(max_workers=4)
 
 bot = Bot(token=TELEGRAM_TOKEN)
@@ -39,9 +44,10 @@ dp = Dispatcher(bot, storage=storage)
 
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 main_kb.add(KeyboardButton("➕ Добавить"), KeyboardButton("📋 Список"))
+
 user_state = {}
 
-# --- Асинхронные обертки для gspread ---
+# === Асинхронные обёртки для gspread ===
 async def async_append_row(values):
     loop = asyncio.get_running_loop()
     await loop.run_in_executor(executor, sheet.append_row, values)
@@ -62,6 +68,7 @@ async def async_row_values(idx):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(executor, sheet.row_values, idx)
 
+# === Получение цены с WB ===
 async def get_price(nm):
     try:
         url = f'https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm}'
@@ -75,6 +82,8 @@ async def get_price(nm):
     except Exception as e:
         logging.warning(f"Ошибка при получении цены: {e}")
     return None, None
+
+# === Обработчики сообщений ===
 
 @dp.message_handler(commands=["start"])
 async def cmd_start(message: types.Message):
@@ -153,6 +162,8 @@ async def edit_item(callback: types.CallbackQuery):
     await callback.answer()
     await callback.message.answer(f"Новая цена для {row[1]} (была: {row[2]}₽):")
 
+# === Фоновая задача проверки цен ===
+
 async def check_prices():
     rows = await async_get_all_records()
     for i, row in enumerate(rows, start=2):
@@ -164,14 +175,14 @@ async def check_prices():
             price, _ = await get_price(artikel)
             if price is None:
                 continue
-            await async_update_cell(i, 4, price)
+            await async_update_cell(i, 4, price)  # LastPrice
             if price <= target and not notified:
                 url = f"https://www.wildberries.ru/catalog/{artikel}/detail.aspx"
                 await bot.send_message(uid, f"🔔 {artikel} подешевел до {price}₽\n{url}")
                 await async_update_cell(i, 5, 'TRUE')
             elif price > target and notified:
                 await async_update_cell(i, 5, 'FALSE')
-            await asyncio.sleep(0.2)
+            await asyncio.sleep(0.2)  # Чтобы не перегружать API и гугл
         except Exception as e:
             logging.warning(f"Ошибка в check_prices: {e}")
 
@@ -180,4 +191,44 @@ async def periodic_check_prices():
     while True:
         try:
             logging.info("Запуск проверки цен...")
-            await
+            await check_prices()
+            iteration += 1
+            logging.info(f"Проверка цен выполнена {iteration} раз")
+        except Exception:
+            logging.exception("Ошибка в цикле проверки цен")
+        await asyncio.sleep(3600)  # Проверять каждый час
+
+# === aiohttp веб-сервер для webhook ===
+
+async def on_startup(app):
+    logging.info("Установка webhook...")
+    await bot.set_webhook(WEBHOOK_URL)
+
+async def on_shutdown(app):
+    logging.info("Снятие webhook...")
+    await bot.delete_webhook()
+    await bot.session.close()
+
+async def handle_webhook(request):
+    try:
+        data = await request.json()
+        update = types.Update(**data)
+        await dp.process_update(update)
+    except Exception as e:
+        logging.error(f"Ошибка в webhook: {e}")
+    return web.Response(text="ok")
+
+app = web.Application()
+app.router.add_post(WEBHOOK_PATH, handle_webhook)
+app.on_startup.append(on_startup)
+app.on_shutdown.append(on_shutdown)
+
+# Запуск фоновой задачи проверки цен после запуска aiohttp
+async def on_startup_background(app):
+    app['checker'] = asyncio.create_task(periodic_check_prices())
+
+app.on_startup.append(on_startup_background)
+
+if __name__ == "__main__":
+    logging.info("Запускаю aiohttp сервер...")
+    web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
