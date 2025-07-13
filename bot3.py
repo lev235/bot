@@ -215,6 +215,7 @@ app.on_shutdown.append(on_shutdown)
 async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
+        logging.info(f"Получено обновление: {data}")  # 👈 добавь лог
         Bot.set_current(bot)
         update = types.Update(**data)
         await dp.process_update(update)
