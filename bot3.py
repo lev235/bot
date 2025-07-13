@@ -207,7 +207,19 @@ async def handle_broadcast_confirm(callback: types.CallbackQuery):
         except Exception as e:
             logging.warning(f"Ошибка рассылки {uid}: {e}")
             failed += 1
-    await callback.message.edit_text(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
+
+    # Попытка обновить сообщение корректно в зависимости от типа содержимого
+    try:
+        if callback.message.text:
+            await callback.message.edit_text(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
+        else:
+            # Если текста нет, то пробуем редактировать подпись (caption)
+            await callback.message.edit_caption(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
+    except Exception as e:
+        logging.warning(f"Не удалось обновить сообщение: {e}")
+        # Если редактировать не удалось — отправляем новое сообщение с результатом
+        await callback.message.answer(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
+
     user_state.pop(callback.from_user.id, None)
 
 # === Webhook и сервер ===
