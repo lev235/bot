@@ -28,9 +28,21 @@ WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = int(os.environ.get("PORT", 8000))
 
 # === Google Sheets ===
-scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
-gc = gspread.authorize(creds)
+gc = None
+sheet = None
+
+async def on_startup(app):
+    global gc, sheet
+    logging.info(f"Устанавливаю webhook: {WEBHOOK_URL}")
+    await bot.set_webhook(WEBHOOK_URL)
+    
+    creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+    gc = gspread.authorize(creds)
+    sheet = gc.open("wb_tracker").sheet1
+    
+    scheduler = AsyncIOScheduler()
+    scheduler.add_job(check_prices, "interval", minutes=1)
+    scheduler.start()
 sheet = gc.open("wb_tracker").sheet1
 
 # === Telegram bot ===
