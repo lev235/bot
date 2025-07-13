@@ -5,7 +5,6 @@ import os
 
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
-from aiogram.dispatcher.webhook import get_new_configured_app
 from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
@@ -31,15 +30,15 @@ sheet = gc.open("wb_tracker").sheet1
 
 # === Telegram setup ===
 bot = Bot(token=TELEGRAM_TOKEN)
-Bot.set_current(bot)  # <<< вот эта строка добавлена
+Bot.set_current(bot)
 dp = Dispatcher(bot)
 
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 main_kb.add(KeyboardButton("➕ Добавить"), KeyboardButton("📋 Список"))
 
 user_state = {}
-pending_broadcasts = {}
 
+# === Функция получения цены ===
 def get_price(nm):
     url = f'https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm}'
     try:
@@ -55,7 +54,7 @@ def get_price(nm):
         return None, None
     return None, None
 
-# === Команды ===
+# === Команды и кнопки ===
 @dp.message_handler(commands=['start'])
 async def cmd_start(message: types.Message):
     await message.reply("Привет! Я отслеживаю цену товара на Wildberries. Используй кнопки ниже.", reply_markup=main_kb)
@@ -149,7 +148,57 @@ async def check_prices():
         elif base_price > target_price and notified:
             sheet.update_cell(i, 5, 'FALSE')
 
-# === Webhook запуск ===
+# === /broadcast ===
+@dp.message_handler(commands=['broadcast'])
+async def cmd_broadcast(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    user_state[message.from_user.id] = {'step': 'await_broadcast_text'}
+    await message.reply("Введите текст рассылки:")
+
+@dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'await_broadcast_text')
+async def receive_broadcast_text(message: types.Message):
+    text = message.text.strip()
+    user_state[message.from_user.id] = {'step': 'confirm_broadcast', 'text': text}
+    markup = InlineKeyboardMarkup(row_width=2)
+    markup.add(
+        InlineKeyboardButton("✅ Отправить", callback_data='broadcast_confirm'),
+        InlineKeyboardButton("✏️ Изменить", callback_data='broadcast_edit'),
+        InlineKeyboardButton("❌ Отменить", callback_data='broadcast_cancel')
+    )
+    await message.reply(f"Вот текст рассылки:\n\n{text}", reply_markup=markup)
+
+@dp.callback_query_handler(lambda c: c.data in ['broadcast_confirm', 'broadcast_cancel', 'broadcast_edit'])
+async def process_broadcast_callback(callback_query: types.CallbackQuery):
+    if callback_query.from_user.id != ADMIN_ID:
+        return
+    action = callback_query.data
+    state = user_state.get(callback_query.from_user.id, {})
+
+    if action == 'broadcast_cancel':
+        user_state.pop(callback_query.from_user.id, None)
+        await callback_query.message.edit_text("Рассылка отменена.")
+
+    elif action == 'broadcast_edit':
+        user_state[callback_query.from_user.id]['step'] = 'await_broadcast_text'
+        await callback_query.message.edit_text("Введите новый текст рассылки:")
+
+    elif action == 'broadcast_confirm':
+        text = state.get('text', '')
+        user_state.pop(callback_query.from_user.id, None)
+        rows = sheet.get_all_records()
+        sent, failed = 0, 0
+        for row in rows:
+            try:
+                user_id = int(row['UserID'])
+                await bot.send_message(user_id, text)
+                sent += 1
+            except Exception as e:
+                logging.warning(f"Не удалось отправить сообщение {user_id}: {e}")
+                failed += 1
+        await callback_query.message.edit_text(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
+
+# === Webhook ===
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
     scheduler = AsyncIOScheduler()
@@ -162,6 +211,7 @@ async def on_shutdown(app):
 app = web.Application()
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
+
 async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
@@ -174,13 +224,13 @@ async def handle_webhook(request: web.Request):
 
 app.router.add_post(WEBHOOK_PATH, handle_webhook)
 
-
+# Пинг для UptimeRobot
 async def handle_ping(request):
     return web.Response(text="OK")
 
-# регистрация маршрута должна идти после определения функции
 app.router.add_get('/ping', handle_ping)
 
+# === Запуск ===
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
