@@ -13,35 +13,33 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 # === Настройки ===
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
-ADMIN_ID = 6882817679  # ← замени на свой user_id
+ADMIN_ID = 6882817679  # замени на свой user_id
 
-# Webhook конфигурация
 WEBHOOK_HOST = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}"
 WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = "0.0.0.0"
-WEBAPP_PORT = int(os.environ.get('PORT', 8000))
+WEBAPP_PORT = int(os.environ.get("PORT", 8000))
 
-# === Google Sheets подключение ===
+# === Google Sheets ===
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name('credentials.json', scope)
+creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
 gc = gspread.authorize(creds)
 sheet = gc.open("wb_tracker").sheet1
 
-# === Telegram setup ===
+# === Telegram bot ===
 bot = Bot(token=TELEGRAM_TOKEN)
 Bot.set_current(bot)
 dp = Dispatcher(bot)
-
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 main_kb.add(KeyboardButton("➕ Добавить"), KeyboardButton("📋 Список"))
 
 user_state = {}
 
-# === Получение цены товара ===
+# === Получение цены ===
 def get_price(nm):
-    url = f'https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm}'
     try:
+        url = f'https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm}'
         resp = requests.get(url)
         data = resp.json()
         products = data.get('data', {}).get('products')
@@ -54,221 +52,157 @@ def get_price(nm):
         return None, None
     return None, None
 
-# === Команды и кнопки ===
-@dp.message_handler(commands=['start'])
-async def cmd_start(message: types.Message):
-    await message.reply("Привет! Я отслеживаю цену товара на Wildberries. Используй кнопки ниже.", reply_markup=main_kb)
+# === Команды ===
+@dp.message_handler(commands=["start"])
+async def start(message: types.Message):
+    await message.reply("Привет! Я отслеживаю цену товара на Wildberries.", reply_markup=main_kb)
 
 @dp.message_handler(lambda m: m.text == "➕ Добавить")
-async def add_start(message: types.Message):
+async def add_item_start(message: types.Message):
     user_state[message.from_user.id] = {'step': 'await_artikel'}
-    await message.reply("Введите артикул товара (nm ID с Wildberries):")
+    await message.reply("Введите артикул товара (nm ID):")
 
 @dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'await_artikel')
-async def add_artikel(message: types.Message):
+async def add_item_artikel(message: types.Message):
     user_state[message.from_user.id]['artikel'] = message.text.strip()
     user_state[message.from_user.id]['step'] = 'await_price'
-    await message.reply("Введите цену (в рублях), ниже которой не должен быть товар:")
+    await message.reply("Введите цену в рублях:")
 
 @dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'await_price')
-async def add_price(message: types.Message):
-    data = user_state[message.from_user.id]
+async def add_item_price(message: types.Message):
     try:
-        target = float(message.text.strip())
+        price = float(message.text.strip())
     except:
         return await message.reply("Неверный формат. Введите число.")
-    artikel = data['artikel']
-    sheet.append_row([message.from_user.id, artikel, target, '', 'FALSE'])
-    await message.reply(f"Добавлен товар {artikel} с ценой ≤ {target}₽.", reply_markup=main_kb)
+    data = user_state[message.from_user.id]
+    sheet.append_row([message.from_user.id, data['artikel'], price, '', 'FALSE'])
+    await message.reply("Товар добавлен.", reply_markup=main_kb)
     user_state.pop(message.from_user.id, None)
 
 @dp.message_handler(lambda m: m.text == "📋 Список")
-async def show_list(message: types.Message):
+async def show_items(message: types.Message):
     rows = sheet.get_all_records()
-    items = []
     markup = InlineKeyboardMarkup(row_width=2)
-    for idx, r in enumerate(rows, start=2):
-        if int(r['UserID']) == message.from_user.id:
-            text = f"📦 {r['Artikel']} → ≤ {r['TargetPrice']}₽ (посл.: {r['LastPrice'] or '–'})"
-            items.append(text)
-            markup.insert(InlineKeyboardButton("Изменить", callback_data=f"edit_{idx}"))
-            markup.insert(InlineKeyboardButton("Удалить", callback_data=f"del_{idx}"))
+    items = []
+    for idx, row in enumerate(rows, start=2):
+        if int(row['UserID']) == message.from_user.id:
+            items.append(f"📦 {row['Artikel']} ≤ {row['TargetPrice']}₽ (посл.: {row['LastPrice'] or '–'})")
+            markup.insert(InlineKeyboardButton("✏️", callback_data=f"edit_{idx}"))
+            markup.insert(InlineKeyboardButton("🗑", callback_data=f"del_{idx}"))
     if not items:
-        await message.reply("У вас пока нет отслеживаемых товаров.", reply_markup=main_kb)
+        await message.reply("Нет отслеживаемых товаров.", reply_markup=main_kb)
     else:
         await message.reply("\n".join(items), reply_markup=markup)
 
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('del_'))
-async def handle_delete(callback_query: types.CallbackQuery):
-    idx = int(callback_query.data.split('_')[1])
+@dp.callback_query_handler(lambda c: c.data.startswith('del_'))
+async def delete_item(callback: types.CallbackQuery):
+    idx = int(callback.data.split('_')[1])
     sheet.delete_rows(idx)
-    await callback_query.answer("Товар удалён.")
-    await callback_query.message.delete()
+    await callback.answer("Удалено.")
+    await callback.message.delete()
 
-@dp.callback_query_handler(lambda c: c.data and c.data.startswith('edit_'))
-async def handle_edit(callback_query: types.CallbackQuery):
-    idx = int(callback_query.data.split('_')[1])
+@dp.callback_query_handler(lambda c: c.data.startswith('edit_'))
+async def edit_item(callback: types.CallbackQuery):
+    idx = int(callback.data.split('_')[1])
     row = sheet.row_values(idx)
-    user_state[callback_query.from_user.id] = {'step': 'edit_price', 'row_idx': idx, 'artikel': row[1]}
-    await callback_query.answer()
-    await callback_query.message.answer(f"Введите новую цену для {row[1]} (была: {row[2]}₽):")
+    user_state[callback.from_user.id] = {'step': 'edit_price', 'row_idx': idx, 'artikel': row[1]}
+    await callback.answer()
+    await callback.message.answer(f"Новая цена для {row[1]} (была: {row[2]}₽):")
 
 @dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'edit_price')
-async def edit_price(message: types.Message):
-    data = user_state[message.from_user.id]
+async def update_price(message: types.Message):
     try:
         new_price = float(message.text.strip())
     except:
         return await message.reply("Неверный формат.")
-    idx = data['row_idx']
-    sheet.update_cell(idx, 3, new_price)
-    sheet.update_cell(idx, 5, 'FALSE')
-    user_state.pop(message.from_user.id, None)
+    state = user_state.pop(message.from_user.id)
+    sheet.update_cell(state['row_idx'], 3, new_price)
+    sheet.update_cell(state['row_idx'], 5, 'FALSE')
     await message.reply("Цена обновлена.", reply_markup=main_kb)
 
 # === Проверка цен ===
 async def check_prices():
     rows = sheet.get_all_records()
     for i, row in enumerate(rows, start=2):
-        user_id = row['UserID']
-        artikel = row['Artikel']
-        target_price = float(row['TargetPrice'])
-        notified = row['Notified'] == 'TRUE'
-        base_price, sale_price = get_price(artikel)
-        if base_price is None:
-            continue
-        sheet.update_cell(i, 4, base_price)
-        if base_price <= target_price and not notified:
-            try:
+        try:
+            uid = int(row["UserID"])
+            artikel = row["Artikel"]
+            target = float(row["TargetPrice"])
+            notified = row["Notified"] == "TRUE"
+            price, _ = get_price(artikel)
+            if price is None:
+                continue
+            sheet.update_cell(i, 4, price)
+            if price <= target and not notified:
                 url = f"https://www.wildberries.ru/catalog/{artikel}/detail.aspx"
-                await bot.send_message(user_id, f"🔔 Товар {artikel} подешевел до {base_price}₽!\n{url}")
-            except Exception as e:
-                logging.error(f"Ошибка при уведомлении: {e}")
-            sheet.update_cell(i, 5, 'TRUE')
-        elif base_price > target_price and notified:
-            sheet.update_cell(i, 5, 'FALSE')
+                await bot.send_message(uid, f"🔔 {artikel} подешевел до {price}₽\n{url}")
+                sheet.update_cell(i, 5, 'TRUE')
+            elif price > target and notified:
+                sheet.update_cell(i, 5, 'FALSE')
+        except Exception as e:
+            logging.warning(f"Ошибка: {e}")
 
-# === Рассылка (/broadcast) ===
+# === Рассылка ===
 @dp.message_handler(commands=['broadcast'])
-async def cmd_broadcast(message: types.Message):
+async def broadcast_start(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
-    user_state[message.from_user.id] = {'step': 'await_broadcast_text'}
-    await message.reply("Введите текст, фото или видео для рассылки:")
+    user_state[message.from_user.id] = {'step': 'await_broadcast'}
+    await message.reply("Отправь текст, фото или видео:")
 
-@dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'await_broadcast_text', content_types=types.ContentType.TEXT)
-async def receive_broadcast_text(message: types.Message):
-    user_state[message.from_user.id] = {
-        'step': 'confirm_broadcast',
-        'type': 'text',
-        'text': message.text.strip()
-    }
-    markup = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("✅ Отправить", callback_data='broadcast_confirm'),
-        InlineKeyboardButton("✏️ Изменить", callback_data='broadcast_edit'),
-        InlineKeyboardButton("❌ Отменить", callback_data='broadcast_cancel')
-    )
-    await message.reply(f"Вот текст рассылки:\n\n{message.text}", reply_markup=markup)
-
-@dp.message_handler(content_types=types.ContentType.PHOTO)
-async def receive_broadcast_photo(message: types.Message):
+@dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'await_broadcast', content_types=types.ContentType.ANY)
+async def preview_broadcast(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
-    user_state[message.from_user.id] = {
-        'step': 'confirm_broadcast',
-        'type': 'photo',
-        'file_id': message.photo[-1].file_id,
-        'caption': message.caption or ''
-    }
+    state = {'step': 'confirm_broadcast'}
     markup = InlineKeyboardMarkup().add(
         InlineKeyboardButton("✅ Отправить", callback_data='broadcast_confirm'),
-        InlineKeyboardButton("✏️ Изменить", callback_data='broadcast_edit'),
         InlineKeyboardButton("❌ Отменить", callback_data='broadcast_cancel')
     )
-    await bot.send_photo(message.chat.id, message.photo[-1].file_id, caption=message.caption or '', reply_markup=markup)
+    if message.text:
+        state.update({'type': 'text', 'text': message.text})
+        await message.reply(f"Предпросмотр:\n{message.text}", reply_markup=markup)
+    elif message.photo:
+        state.update({'type': 'photo', 'file_id': message.photo[-1].file_id, 'caption': message.caption or ''})
+        await bot.send_photo(message.chat.id, message.photo[-1].file_id, caption=message.caption, reply_markup=markup)
+    elif message.video:
+        state.update({'type': 'video', 'file_id': message.video.file_id, 'caption': message.caption or ''})
+        await bot.send_video(message.chat.id, message.video.file_id, caption=message.caption, reply_markup=markup)
+    user_state[message.from_user.id] = state
 
-@dp.message_handler(content_types=types.ContentType.VIDEO)
-async def receive_broadcast_video(message: types.Message):
-    if message.from_user.id != ADMIN_ID:
+@dp.callback_query_handler(lambda c: c.data in ['broadcast_confirm', 'broadcast_cancel'])
+async def handle_broadcast_confirm(callback: types.CallbackQuery):
+    if callback.from_user.id != ADMIN_ID:
         return
-    user_state[message.from_user.id] = {
-        'step': 'confirm_broadcast',
-        'type': 'video',
-        'file_id': message.video.file_id,
-        'caption': message.caption or ''
-    }
-    markup = InlineKeyboardMarkup().add(
-        InlineKeyboardButton("✅ Отправить", callback_data='broadcast_confirm'),
-        InlineKeyboardButton("✏️ Изменить", callback_data='broadcast_edit'),
-        InlineKeyboardButton("❌ Отменить", callback_data='broadcast_cancel')
-    )
-    await bot.send_video(message.chat.id, message.video.file_id, caption=message.caption or '', reply_markup=markup)
-
-@dp.callback_query_handler(lambda c: c.data in ['broadcast_confirm', 'broadcast_cancel', 'broadcast_edit'])
-async def handle_broadcast_action(callback_query: types.CallbackQuery):
-    if callback_query.from_user.id != ADMIN_ID:
-        return
-    action = callback_query.data
-    state = user_state.get(callback_query.from_user.id, {})
-
-    if state.get('step') != 'confirm_broadcast':
-        await callback_query.answer("Рассылка уже завершена или отменена.", show_alert=True)
+    state = user_state.get(callback.from_user.id)
+    if callback.data == 'broadcast_cancel':
+        user_state.pop(callback.from_user.id, None)
+        await callback.message.edit_text("Рассылка отменена.")
         return
 
-    if action == 'broadcast_cancel':
-        user_state.pop(callback_query.from_user.id, None)
+    sent, failed = 0, 0
+    rows = sheet.get_all_records()
+    for row in rows:
+        uid = int(row["UserID"])
         try:
-            if state.get('type') == 'text':
-                await callback_query.message.edit_text("Рассылка отменена.")
-            else:
-                await callback_query.message.edit_caption("Рассылка отменена.")
-        except Exception:
-            pass
-        return
+            if state["type"] == "text":
+                await bot.send_message(uid, state["text"])
+            elif state["type"] == "photo":
+                await bot.send_photo(uid, state["file_id"], caption=state["caption"])
+            elif state["type"] == "video":
+                await bot.send_video(uid, state["file_id"], caption=state["caption"])
+            sent += 1
+        except Exception as e:
+            logging.warning(f"Ошибка рассылки {uid}: {e}")
+            failed += 1
+    await callback.message.edit_text(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
+    user_state.pop(callback.from_user.id, None)
 
-    if action == 'broadcast_edit':
-        user_state[callback_query.from_user.id]['step'] = 'await_broadcast_text'
-        try:
-            if state.get('type') == 'text':
-                await callback_query.message.edit_text("Введите новый текст или медиа для рассылки:")
-            else:
-                await callback_query.message.edit_caption("Введите новый текст или медиа для рассылки:")
-        except Exception:
-            pass
-        return
-
-    if action == 'broadcast_confirm':
-        sent, failed = 0, 0
-        rows = sheet.get_all_records()
-        for row in rows:
-            user_id = int(row['UserID'])
-            try:
-                if state.get('type') == 'text':
-                    await bot.send_message(user_id, state.get('text'))
-                elif state.get('type') == 'photo':
-                    await bot.send_photo(user_id, state.get('file_id'), caption=state.get('caption'))
-                elif state.get('type') == 'video':
-                    await bot.send_video(user_id, state.get('file_id'), caption=state.get('caption'))
-                sent += 1
-            except Exception as e:
-                logging.warning(f"Ошибка отправки {user_id}: {e}")
-                failed += 1
-
-        try:
-            if state.get('type') == 'text':
-                await callback_query.message.edit_text(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
-            else:
-                await callback_query.message.edit_caption(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
-        except Exception:
-            pass
-
-        user_state.pop(callback_query.from_user.id, None)
-
-# === Webhook ===
+# === Webhook и сервер ===
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(check_prices, 'interval', minutes=1)
+    scheduler.add_job(check_prices, "interval", minutes=1)
     scheduler.start()
 
 async def on_shutdown(app):
@@ -281,23 +215,23 @@ app.on_shutdown.append(on_shutdown)
 async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
-        Bot.set_current(bot)  # важно для контекста
+        Bot.set_current(bot)
         update = types.Update(**data)
         await dp.process_update(update)
     except Exception as e:
-        logging.error(f"Ошибка при обработке обновления: {e}")
+        logging.error(f"Ошибка обновления: {e}")
         return web.Response(status=500)
     return web.Response(text="OK")
 
 app.router.add_post(WEBHOOK_PATH, handle_webhook)
 
-# Пинг для UptimeRobot
-async def handle_ping(request):
+# Пинг от UptimeRobot
+async def ping(request):
     return web.Response(text="OK")
 
-app.router.add_get('/ping', handle_ping)
+app.router.add_get("/ping", ping)
 
-# === Запуск приложения ===
+# === Запуск ===
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
