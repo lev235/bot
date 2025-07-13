@@ -5,6 +5,7 @@ import os
 import sys
 import aiohttp
 
+from apscheduler.triggers.interval import IntervalTrigger
 from aiogram.contrib.fsm_storage.memory import MemoryStorage
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
@@ -155,6 +156,7 @@ async def check_prices():
                 sheet.update_cell(i, 5, 'TRUE')
             elif price > target and notified:
                 sheet.update_cell(i, 5, 'FALSE')
+            await asyncio.sleep(0.2)  # 💥 добавим задержку между отправками
         except Exception as e:
             logging.warning(f"Ошибка: {e}")
 
@@ -250,7 +252,10 @@ async def on_startup(app):
     sheet = gc.open("wb_tracker").sheet1
     
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(check_prices, "interval", minutes=1)
+    scheduler.add_job(
+    lambda: asyncio.create_task(check_prices()),
+    trigger=IntervalTrigger(minutes=1)
+)
     scheduler.start()
 
 async def on_shutdown(app):
