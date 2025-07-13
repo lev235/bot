@@ -232,11 +232,10 @@ async def handle_webhook(request):
         return web.Response(status=500)
     return web.Response(text="OK")
 
-app.router.add_post(WEBHOOK_PATH, handle_webhook)
-
 async def ping(request):
     return web.Response(text="OK")
 
+app.router.add_post(WEBHOOK_PATH, handle_webhook)
 app.router.add_get("/ping", ping)
 
 async def on_startup(app):
