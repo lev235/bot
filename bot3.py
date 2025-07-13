@@ -29,7 +29,7 @@ WEBHOOK_HOST = f"https://{RENDER_HOST}"
 WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = "0.0.0.0"
-WEBAPP_PORT = int(os.getenv("PORT", 8443))
+WEBAPP_PORT = int(os.getenv("PORT", 10000))
 
 # Google Sheets
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
@@ -47,6 +47,9 @@ main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 main_kb.add(KeyboardButton("➕ Добавить"), KeyboardButton("📋 Список"))
 
 user_state = {}
+
+# Глобальный aiohttp ClientSession
+session: aiohttp.ClientSession | None = None
 
 # === Асинхронные обёртки для gspread ===
 async def async_append_row(values):
@@ -71,15 +74,18 @@ async def async_row_values(idx):
 
 # === Получение цены с WB ===
 async def get_price(nm):
+    global session
+    if session is None:
+        logging.warning("HTTP session не инициализирована")
+        return None, None
     try:
         url = f'https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm}'
-        async with aiohttp.ClientSession() as session:
-            async with session.get(url, timeout=10) as resp:
-                data = await resp.json()
-                products = data.get('data', {}).get('products')
-                if products:
-                    item = products[0]
-                    return item.get('priceU', 0) // 100, item.get('salePriceU', item.get('priceU', 0)) // 100
+        async with session.get(url, timeout=10) as resp:
+            data = await resp.json()
+            products = data.get('data', {}).get('products')
+            if products:
+                item = products[0]
+                return item.get('priceU', 0) // 100, item.get('salePriceU', item.get('priceU', 0)) // 100
     except Exception as e:
         logging.warning(f"Ошибка при получении цены: {e}")
     return None, None
@@ -202,13 +208,20 @@ async def periodic_check_prices():
 # === AIOHTTP Webhook ===
 
 async def on_startup(app):
+    global session
     logging.info("Установка webhook...")
+    session = aiohttp.ClientSession()
     await bot.set_webhook(WEBHOOK_URL)
+    # Запускаем проверку цен в фоне
+    asyncio.create_task(periodic_check_prices())
 
 async def on_shutdown(app):
     logging.info("Снятие webhook...")
     await bot.delete_webhook()
     await bot.session.close()
+    global session
+    if session:
+        await session.close()
 
 async def handle_webhook(request):
     try:
@@ -225,17 +238,16 @@ async def handle_webhook(request):
 async def handle_ping(request):
     return web.Response(text="pong")
 
+async def handle_root(request):
+    return web.Response(text="Bot is running")
+
 # === Создание и запуск приложения ===
 app = web.Application()
 app.router.add_post(WEBHOOK_PATH, handle_webhook)
 app.router.add_get("/ping", handle_ping)
+app.router.add_get("/", handle_root)
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
-app.on_startup.append(lambda app: asyncio.create_task(periodic_check_prices()))
-async def handle_root(request):
-    return web.Response(text="Bot is running")
-
-app.router.add_get("/", handle_root)
 
 if __name__ == "__main__":
     logging.info("Запускаю aiohttp сервер...")
