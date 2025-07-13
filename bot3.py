@@ -221,7 +221,6 @@ async def handle_broadcast_confirm(callback: types.CallbackQuery):
 # === Webhook-сервер ===
 app = web.Application()
 
-@app.post(WEBHOOK_PATH)
 async def handle_webhook(request):
     try:
         data = await request.json()
@@ -233,9 +232,12 @@ async def handle_webhook(request):
         return web.Response(status=500)
     return web.Response(text="OK")
 
-@app.get("/ping")
+app.router.add_post(WEBHOOK_PATH, handle_webhook)
+
 async def ping(request):
     return web.Response(text="OK")
+
+app.router.add_get("/ping", ping)
 
 async def on_startup(app):
     global gc, sheet
