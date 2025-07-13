@@ -15,8 +15,8 @@ from oauth2client.service_account import ServiceAccountCredentials
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_ID = 6882817679  # ← замени на свой user_id
 
-# Webhook конфигурация
-WEBHOOK_HOST = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}"
+# Хост указываем вручную — или из переменной окружения
+WEBHOOK_HOST = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME') or 'bot-ulgt.onrender.com'}"
 WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = "0.0.0.0"
@@ -30,9 +30,7 @@ sheet = gc.open("wb_tracker").sheet1
 
 # === Telegram setup ===
 bot = Bot(token=TELEGRAM_TOKEN)
-Bot.set_current(bot)
 dp = Dispatcher(bot)
-
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 main_kb.add(KeyboardButton("➕ Добавить"), KeyboardButton("📋 Список"))
 
@@ -198,12 +196,13 @@ async def process_broadcast_callback(callback_query: types.CallbackQuery):
                 failed += 1
         await callback_query.message.edit_text(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
 
-# === Webhook ===
+# === Webhook запуск ===
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_prices, 'interval', minutes=1)
     scheduler.start()
+    logging.info(f"Webhook set to: {WEBHOOK_URL}")
 
 async def on_shutdown(app):
     await bot.delete_webhook()
@@ -230,7 +229,7 @@ async def handle_ping(request):
 
 app.router.add_get('/ping', handle_ping)
 
-# === Запуск ===
+# === Запуск приложения ===
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
     web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
