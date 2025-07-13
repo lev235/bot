@@ -212,11 +212,14 @@ async def on_shutdown(app):
 async def handle_webhook(request):
     try:
         data = await request.json()
-        update = types.Update(**data)
+        update = Update(**data)
+
+        Bot.set_current(bot)  # Устанавливаем текущий бот в контекст
         await dp.process_update(update)
     except Exception as e:
-        logging.error(f"Ошибка в webhook: {e}")
-    return web.Response(text="ok")
+        logging.exception("Ошибка в webhook")
+        return web.Response(status=500)
+    return web.Response(text="OK")
 
 app = web.Application()
 app.router.add_post(WEBHOOK_PATH, handle_webhook)
