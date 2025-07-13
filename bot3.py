@@ -15,8 +15,8 @@ from oauth2client.service_account import ServiceAccountCredentials
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
 ADMIN_ID = 6882817679  # ← замени на свой user_id
 
-# Хост указываем вручную — или из переменной окружения
-WEBHOOK_HOST = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME') or 'bot-ulgt.onrender.com'}"
+# Webhook конфигурация
+WEBHOOK_HOST = f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}"
 WEBHOOK_PATH = f"/webhook/{TELEGRAM_TOKEN}"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = "0.0.0.0"
@@ -30,13 +30,15 @@ sheet = gc.open("wb_tracker").sheet1
 
 # === Telegram setup ===
 bot = Bot(token=TELEGRAM_TOKEN)
+Bot.set_current(bot)
 dp = Dispatcher(bot)
+
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 main_kb.add(KeyboardButton("➕ Добавить"), KeyboardButton("📋 Список"))
 
 user_state = {}
 
-# === Функция получения цены ===
+# === Получение цены товара ===
 def get_price(nm):
     url = f'https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm}'
     try:
@@ -146,28 +148,64 @@ async def check_prices():
         elif base_price > target_price and notified:
             sheet.update_cell(i, 5, 'FALSE')
 
-# === /broadcast ===
+# === Рассылка (/broadcast) ===
 @dp.message_handler(commands=['broadcast'])
 async def cmd_broadcast(message: types.Message):
     if message.from_user.id != ADMIN_ID:
         return
     user_state[message.from_user.id] = {'step': 'await_broadcast_text'}
-    await message.reply("Введите текст рассылки:")
+    await message.reply("Введите текст, фото или видео для рассылки:")
 
-@dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'await_broadcast_text')
+@dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'await_broadcast_text', content_types=types.ContentType.TEXT)
 async def receive_broadcast_text(message: types.Message):
-    text = message.text.strip()
-    user_state[message.from_user.id] = {'step': 'confirm_broadcast', 'text': text}
-    markup = InlineKeyboardMarkup(row_width=2)
-    markup.add(
+    user_state[message.from_user.id] = {
+        'step': 'confirm_broadcast',
+        'type': 'text',
+        'text': message.text.strip()
+    }
+    markup = InlineKeyboardMarkup().add(
         InlineKeyboardButton("✅ Отправить", callback_data='broadcast_confirm'),
         InlineKeyboardButton("✏️ Изменить", callback_data='broadcast_edit'),
         InlineKeyboardButton("❌ Отменить", callback_data='broadcast_cancel')
     )
-    await message.reply(f"Вот текст рассылки:\n\n{text}", reply_markup=markup)
+    await message.reply(f"Вот текст рассылки:\n\n{message.text}", reply_markup=markup)
+
+@dp.message_handler(content_types=types.ContentType.PHOTO)
+async def receive_broadcast_photo(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    user_state[message.from_user.id] = {
+        'step': 'confirm_broadcast',
+        'type': 'photo',
+        'file_id': message.photo[-1].file_id,
+        'caption': message.caption or ''
+    }
+    markup = InlineKeyboardMarkup().add(
+        InlineKeyboardButton("✅ Отправить", callback_data='broadcast_confirm'),
+        InlineKeyboardButton("✏️ Изменить", callback_data='broadcast_edit'),
+        InlineKeyboardButton("❌ Отменить", callback_data='broadcast_cancel')
+    )
+    await bot.send_photo(message.chat.id, message.photo[-1].file_id, caption=message.caption or '', reply_markup=markup)
+
+@dp.message_handler(content_types=types.ContentType.VIDEO)
+async def receive_broadcast_video(message: types.Message):
+    if message.from_user.id != ADMIN_ID:
+        return
+    user_state[message.from_user.id] = {
+        'step': 'confirm_broadcast',
+        'type': 'video',
+        'file_id': message.video.file_id,
+        'caption': message.caption or ''
+    }
+    markup = InlineKeyboardMarkup().add(
+        InlineKeyboardButton("✅ Отправить", callback_data='broadcast_confirm'),
+        InlineKeyboardButton("✏️ Изменить", callback_data='broadcast_edit'),
+        InlineKeyboardButton("❌ Отменить", callback_data='broadcast_cancel')
+    )
+    await bot.send_video(message.chat.id, message.video.file_id, caption=message.caption or '', reply_markup=markup)
 
 @dp.callback_query_handler(lambda c: c.data in ['broadcast_confirm', 'broadcast_cancel', 'broadcast_edit'])
-async def process_broadcast_callback(callback_query: types.CallbackQuery):
+async def handle_broadcast_action(callback_query: types.CallbackQuery):
     if callback_query.from_user.id != ADMIN_ID:
         return
     action = callback_query.data
@@ -176,33 +214,38 @@ async def process_broadcast_callback(callback_query: types.CallbackQuery):
     if action == 'broadcast_cancel':
         user_state.pop(callback_query.from_user.id, None)
         await callback_query.message.edit_text("Рассылка отменена.")
+        return
 
-    elif action == 'broadcast_edit':
+    if action == 'broadcast_edit':
         user_state[callback_query.from_user.id]['step'] = 'await_broadcast_text'
-        await callback_query.message.edit_text("Введите новый текст рассылки:")
+        await callback_query.message.edit_text("Введите новый текст или медиа для рассылки:")
+        return
 
-    elif action == 'broadcast_confirm':
-        text = state.get('text', '')
-        user_state.pop(callback_query.from_user.id, None)
-        rows = sheet.get_all_records()
+    if action == 'broadcast_confirm':
         sent, failed = 0, 0
+        rows = sheet.get_all_records()
         for row in rows:
+            user_id = int(row['UserID'])
             try:
-                user_id = int(row['UserID'])
-                await bot.send_message(user_id, text)
+                if state.get('type') == 'text':
+                    await bot.send_message(user_id, state.get('text'))
+                elif state.get('type') == 'photo':
+                    await bot.send_photo(user_id, state.get('file_id'), caption=state.get('caption'))
+                elif state.get('type') == 'video':
+                    await bot.send_video(user_id, state.get('file_id'), caption=state.get('caption'))
                 sent += 1
             except Exception as e:
-                logging.warning(f"Не удалось отправить сообщение {user_id}: {e}")
+                logging.warning(f"Ошибка отправки {user_id}: {e}")
                 failed += 1
         await callback_query.message.edit_text(f"Рассылка завершена.\n✅ Успешно: {sent}\n❌ Ошибки: {failed}")
+        user_state.pop(callback_query.from_user.id, None)
 
-# === Webhook запуск ===
+# === Webhook ===
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
     scheduler = AsyncIOScheduler()
     scheduler.add_job(check_prices, 'interval', minutes=1)
     scheduler.start()
-    logging.info(f"Webhook set to: {WEBHOOK_URL}")
 
 async def on_shutdown(app):
     await bot.delete_webhook()
@@ -214,8 +257,8 @@ app.on_shutdown.append(on_shutdown)
 async def handle_webhook(request: web.Request):
     try:
         data = await request.json()
+        Bot.set_current(bot)  # обязательно!
         update = types.Update.to_object(data)
-        Bot.set_current(bot)  # 👈 добавь это здесь
         await dp.process_update(update)
     except Exception as e:
         logging.error(f"Ошибка при обработке обновления: {e}")
