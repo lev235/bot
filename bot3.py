@@ -60,6 +60,25 @@ async def get_price_wb(nm):
                 logging.error(f"Ошибка запроса {url}: {e}")
     return None, None
 
+# === Асинхронные обёртки для Google Sheets ===
+async def async_append_row(row):
+    await asyncio.to_thread(sheet.append_row, row)
+
+async def async_get_all_records():
+    return await asyncio.to_thread(sheet.get_all_records)
+
+async def async_get_all_values():
+    return await asyncio.to_thread(sheet.get_all_values)
+
+async def async_update_cell(row, col, value):
+    await asyncio.to_thread(sheet.update_cell, row, col, value)
+
+async def async_delete_row(row):
+    await asyncio.to_thread(sheet.delete_rows, row)
+
+async def async_row_values(row):
+    return await asyncio.to_thread(sheet.row_values, row)
+
 # === Хендлеры пользователя ===
 @dp.message_handler(commands=["start"])
 async def cmd_start(msg: types.Message):
@@ -83,12 +102,12 @@ async def receive_price(msg: types.Message):
     except:
         return await msg.answer("Неверный формат. Введите число.")
     data = user_state.pop(msg.from_user.id)
-    sheet.append_row([msg.from_user.id, data['artikel'], price, '', 'FALSE'])
+    await async_append_row([msg.from_user.id, data['artikel'], price, '', 'FALSE'])
     await msg.answer(f"Товар {data['artikel']} добавлен!", reply_markup=main_kb)
 
 @dp.message_handler(lambda m: m.text == "📋 Список")
 async def show_list(msg: types.Message):
-    rows = sheet.get_all_records()
+    rows = await async_get_all_records()
     items, markup = [], InlineKeyboardMarkup(row_width=2)
     for idx, row in enumerate(rows, start=2):
         if int(row['UserID']) == msg.from_user.id:
@@ -105,14 +124,14 @@ async def show_list(msg: types.Message):
 @dp.callback_query_handler(lambda c: c.data.startswith("del_"))
 async def handle_delete(c: types.CallbackQuery):
     idx = int(c.data.split("_")[1])
-    sheet.delete_rows(idx)
+    await async_delete_row(idx)
     await c.answer("Удалено.")
     await c.message.delete()
 
 @dp.callback_query_handler(lambda c: c.data.startswith("edit_"))
 async def handle_edit(c: types.CallbackQuery):
     idx = int(c.data.split("_")[1])
-    row = sheet.row_values(idx)
+    row = await async_row_values(idx)
     user_state[c.from_user.id] = {'step': 'edit_price', 'row_idx': idx, 'artikel': row[1]}
     await c.answer()
     await c.message.answer(f"Введите новую цену для {row[1]} (текущая: {row[2]}₽):")
@@ -124,8 +143,8 @@ async def handle_edit_price(msg: types.Message):
     except:
         return await msg.answer("Неверный формат.")
     data = user_state.pop(msg.from_user.id)
-    sheet.update_cell(data['row_idx'], 3, price)
-    sheet.update_cell(data['row_idx'], 5, 'FALSE')
+    await async_update_cell(data['row_idx'], 3, price)
+    await async_update_cell(data['row_idx'], 5, 'FALSE')
     await msg.answer("Цена обновлена.", reply_markup=main_kb)
 
 # === Админ-рассылка ===
@@ -169,7 +188,7 @@ async def broadcast_actions(c: types.CallbackQuery):
         admin_state[ADMIN_ID]['step'] = 'await_content'
         await c.message.edit_text("✏️ Отправьте новое сообщение:")
     elif action == "send_broadcast":
-        users = set(row[0] for row in sheet.get_all_values()[1:])
+        users = set(row[0] for row in await async_get_all_values()[1:])
         s, f = 0, 0
         for uid in users:
             try:
@@ -188,40 +207,28 @@ async def broadcast_actions(c: types.CallbackQuery):
 
 # === Проверка цен ===
 async def check_prices():
-    rows = sheet.get_all_records()  # <-- заменено
+    rows = await async_get_all_records()
     for i, row in enumerate(rows, start=2):
         try:
             uid = int(row["UserID"])
             artikel = row["Artikel"]
             target = float(row["TargetPrice"])
             notified = row["Notified"] == "TRUE"
-            price, _ = await get_price_wb(artikel)  # заменил get_price → get_price_wb
+            price, _ = await get_price_wb(artikel)
             if price is None:
                 continue
-            sheet.update_cell(i, 4, price)  # заменено
+            await async_update_cell(i, 4, price)
             if price <= target and not notified:
                 url = f"https://www.wildberries.ru/catalog/{artikel}/detail.aspx"
                 await bot.send_message(uid, f"🔔 {artikel} подешевел до {price}₽\n{url}")
-                sheet.update_cell(i, 5, 'TRUE')  # заменено
+                await async_update_cell(i, 5, 'TRUE')
             elif price > target and notified:
-                sheet.update_cell(i, 5, 'FALSE')  # заменено
+                await async_update_cell(i, 5, 'FALSE')
             await asyncio.sleep(0.2)
         except Exception as e:
             logging.warning(f"Ошибка в check_prices: {e}")
 
-async def periodic_check_prices():
-    iteration = 0
-    while True:
-        try:
-            logging.info("Запуск проверки цен...")
-            await check_prices()
-            iteration += 1
-            logging.info(f"Проверка цен выполнена {iteration} раз")
-        except Exception:
-            logging.exception("Ошибка в цикле проверки цен")
-        await asyncio.sleep(3600)
-
-# === aiohttp Webhook ===
+# === Webhook + Render старт ===
 app = web.Application()
 
 async def webhook_handler(request):
