@@ -2,18 +2,16 @@ import os
 import logging
 import requests
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton, InputMediaPhoto, InputMediaVideo
 from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-# === Конфигурация ===
 API_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Например: https://your-service.onrender.com/webhook
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", 123456789))
-
 SPREADSHEET_NAME = 'wb_tracker'
 GOOGLE_CREDS_JSON = 'credentials.json'
 
@@ -25,13 +23,14 @@ sheet = gc.open(SPREADSHEET_NAME).sheet1
 
 # === Telegram Bot ===
 bot = Bot(token=API_TOKEN)
-Bot.set_current(bot)  # Важно — сразу установить текущий бот
+Bot.set_current(bot)
 dp = Dispatcher(bot)
 
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 main_kb.add(KeyboardButton("➕ Добавить"), KeyboardButton("📋 Список"))
 
 user_state = {}
+admin_state = {}
 
 # === Получение цен с WB ===
 def get_price(nm):
@@ -47,7 +46,7 @@ def get_price(nm):
         logging.error(f"Ошибка запроса WB: {e}")
     return None, None
 
-# === Хендлеры ===
+# === Хендлеры пользователя ===
 @dp.message_handler(commands=["start"])
 async def start_cmd(message: types.Message):
     await message.answer("Привет! Я отслеживаю цену товара на Wildberries. Используй кнопки ниже.", reply_markup=main_kb)
@@ -55,7 +54,7 @@ async def start_cmd(message: types.Message):
 @dp.message_handler(lambda m: m.text == "➕ Добавить")
 async def handle_add(message: types.Message):
     user_state[message.from_user.id] = {'step': 'await_artikel'}
-    await message.answer("Введите артикул товара (nm ID с Wildberries):")
+    await message.answer("Введите артикул товара:")
 
 @dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'await_artikel')
 async def handle_artikel(message: types.Message):
@@ -113,9 +112,68 @@ async def handle_edit_price(message: types.Message):
     sheet.update_cell(data['row_idx'], 5, 'FALSE')
     await message.answer("Цена обновлена.", reply_markup=main_kb)
 
+# === Админ рассылка ===
+@dp.message_handler(lambda m: m.from_user.id == ADMIN_ID and m.text == "/broadcast")
+async def admin_broadcast_start(message: types.Message):
+    admin_state[ADMIN_ID] = {'step': 'await_content'}
+    await message.answer("Отправьте текст, фото или видео для рассылки:")
+
+@dp.message_handler(lambda m: admin_state.get(ADMIN_ID, {}).get('step') == 'await_content', content_types=types.ContentTypes.ANY)
+async def admin_collect_content(message: types.Message):
+    admin_state[ADMIN_ID] = {
+        'step': 'confirm',
+        'content_type': message.content_type,
+        'text': message.caption if message.caption else message.text,
+        'file_id': (
+            message.photo[-1].file_id if message.photo else
+            message.video.file_id if message.video else
+            None
+        )
+    }
+    markup = InlineKeyboardMarkup()
+    markup.add(
+        InlineKeyboardButton("✅ Отправить", callback_data="send_broadcast"),
+        InlineKeyboardButton("❌ Отменить", callback_data="cancel_broadcast"),
+        InlineKeyboardButton("✏️ Изменить", callback_data="edit_broadcast")
+    )
+
+    if message.content_type == "photo":
+        await message.answer_photo(photo=admin_state[ADMIN_ID]["file_id"], caption=admin_state[ADMIN_ID]["text"], reply_markup=markup)
+    elif message.content_type == "video":
+        await message.answer_video(video=admin_state[ADMIN_ID]["file_id"], caption=admin_state[ADMIN_ID]["text"], reply_markup=markup)
+    else:
+        await message.answer(admin_state[ADMIN_ID]["text"], reply_markup=markup)
+
+@dp.callback_query_handler(lambda c: c.data in ["send_broadcast", "cancel_broadcast", "edit_broadcast"])
+async def handle_broadcast_actions(callback: types.CallbackQuery):
+    action = callback.data
+    await callback.answer()
+
+    if action == "cancel_broadcast":
+        admin_state.pop(ADMIN_ID, None)
+        await callback.message.edit_text("❌ Рассылка отменена.")
+    elif action == "edit_broadcast":
+        admin_state[ADMIN_ID]['step'] = 'await_content'
+        await callback.message.edit_text("✏️ Отправьте новое сообщение:")
+    elif action == "send_broadcast":
+        users = set(row[0] for row in sheet.get_all_values()[1:])
+        success, fail = 0, 0
+        for user in users:
+            try:
+                if admin_state[ADMIN_ID]["content_type"] == "photo":
+                    await bot.send_photo(user, photo=admin_state[ADMIN_ID]["file_id"], caption=admin_state[ADMIN_ID]["text"])
+                elif admin_state[ADMIN_ID]["content_type"] == "video":
+                    await bot.send_video(user, video=admin_state[ADMIN_ID]["file_id"], caption=admin_state[ADMIN_ID]["text"])
+                else:
+                    await bot.send_message(user, text=admin_state[ADMIN_ID]["text"])
+                success += 1
+            except:
+                fail += 1
+        admin_state.pop(ADMIN_ID, None)
+        await callback.message.edit_text(f"✅ Рассылка завершена.\nУспешно: {success}\nОшибки: {fail}")
+
 # === Проверка цен ===
 async def check_prices():
-    Bot.set_current(bot)  # Установка текущего бота в контекст для фоновой задачи
     rows = sheet.get_all_records()
     for i, row in enumerate(rows, start=2):
         user_id, artikel = row['UserID'], row['Artikel']
@@ -140,7 +198,6 @@ app = web.Application()
 async def webhook_handler(request):
     data = await request.json()
     update = types.Update(**data)
-    Bot.set_current(bot)  # ВАЖНО: ставим текущий бот в контекст при обработке webhook
     await dp.process_update(update)
     return web.Response()
 
