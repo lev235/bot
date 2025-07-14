@@ -37,27 +37,28 @@ user_state = {}
 admin_state = {}
 
 # === Получение цен с WB API ===
-async def get_price(nm):
-    url = f'https://search.wb.ru/exactmatch/ru/common/v5/search?query={nm}&resultset=catalog'
-    try:
-        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
-            async with session.get(url) as resp:
-                if resp.status == 404:
-                    logging.warning(f"[WB search] Товар не найден (404): nm={nm}")
-                    return None, None
-                if resp.status != 200:
-                    logging.error(f"[WB search] Статус != 200: {resp.status}, nm={nm}")
-                    return None, None
-                data = await resp.json()
-                products = data.get("data", {}).get("products", [])
-                if not products:
-                    logging.warning(f"[WB search] Товар не найден: nm={nm}")
-                    return None, None
-                item = products[0]
-                return item.get("priceU", 0) // 100, item.get("salePriceU", item.get("priceU", 0)) // 100
-    except Exception as e:
-        logging.exception(f"[WB search] Ошибка при получении цены nm={nm}: {e}")
-        return None, None
+async def get_price_wb(nm):
+    nm_str = str(nm)
+    vol = nm_str[:3]
+    part = nm_str[:5]
+    servers = ["basket-01.wb.ru", "basket-02.wb.ru", "basket-03.wb.ru"]
+    headers = {"User-Agent": "Mozilla/5.0"}
+
+    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+        for server in servers:
+            url = f"https://{server}/vol{vol}/part{part}/info/{nm_str}.json"
+            try:
+                async with session.get(url, headers=headers) as resp:
+                    if resp.status == 200:
+                        data = await resp.json()
+                        price = data.get("price", {}).get("priceU")
+                        sale_price = data.get("price", {}).get("salePriceU")
+                        if price is None:
+                            continue
+                        return price // 100, (sale_price or price) // 100
+            except Exception as e:
+                logging.error(f"Ошибка запроса {url}: {e}")
+    return None, None
 
 # === Хендлеры пользователя ===
 @dp.message_handler(commands=["start"])
