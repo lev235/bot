@@ -239,7 +239,7 @@ app.router.add_get("/ping", ping_handler)
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(lambda: asyncio.create_task(check_prices()), "interval", minutes=1)
+    scheduler.add_job(check_prices, "interval", minutes=1)
     scheduler.start()
     logger.info("🚀 Бот запущен")
 
