@@ -36,33 +36,25 @@ user_state = {}
 admin_state = {}
 
 def get_price(nm):
-    nm_clean = str(nm).strip()
-    if not nm_clean.isdigit():
-        logging.warning(f"[WB] Некорректный nm: '{nm}'")
-        return None, None
-    url = f'https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm_clean}'
     try:
+        url = f'https://search.wb.ru/exactmatch/ru/common/v5/search?query={nm}&resultset=catalog'
         resp = requests.get(url, timeout=10)
         if resp.status_code != 200:
-            logging.error(f"[WB] Статус !=200 ({resp.status_code}), nm={nm_clean}")
+            logging.error(f"[WB search] Статус != 200: {resp.status_code}, nm={nm}")
             return None, None
-        text = resp.text.strip()
-        if not text:
-            logging.error(f"[WB] Пустой ответ nm={nm_clean}")
-            return None, None
-        try:
-            data = resp.json()
-        except json.JSONDecodeError:
-            logging.error(f"[WB] Невалидный JSON nm={nm_clean}, ответ={text[:200]}")
-            return None, None
-        products = data.get('data', {}).get('products')
+
+        data = resp.json()
+        products = data.get("data", {}).get("products", [])
         if not products:
-            logging.warning(f"[WB] Нет products nm={nm_clean}")
+            logging.warning(f"[WB search] Товар не найден: nm={nm}")
             return None, None
+
         item = products[0]
-        return item.get('priceU', 0)//100, item.get('salePriceU', item.get('priceU', 0))//100
+        base_price = item.get("priceU", 0) // 100
+        sale_price = item.get("salePriceU", item.get("priceU", 0)) // 100
+        return base_price, sale_price
     except Exception as e:
-        logging.exception(f"[WB] Ошибка запроса nm={nm_clean}: {e}")
+        logging.exception(f"[WB search] Ошибка при получении цены nm={nm}: {e}")
         return None, None
 
 # --- handlers same as before for add/list/edit ...
