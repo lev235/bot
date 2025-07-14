@@ -9,7 +9,6 @@ from aiohttp import web
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from oauth2client.service_account import ServiceAccountCredentials
 
-# === Настройки ===
 API_TOKEN = os.getenv("BOT_TOKEN")
 WEBHOOK_URL = os.getenv("WEBHOOK_URL")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "0"))
@@ -18,33 +17,33 @@ GOOGLE_CREDS_JSON = 'credentials.json'
 
 logging.basicConfig(level=logging.INFO)
 
-# === Google Sheets ===
+# Google Sheets setup
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
 creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDS_JSON, scope)
 gc = gspread.authorize(creds)
 sheet = gc.open(SPREADSHEET_NAME).sheet1
 
-# === Telegram Bot ===
+# Telegram bot
 bot = Bot(token=API_TOKEN)
 Bot.set_current(bot)
 dp = Dispatcher(bot)
 
-# === Клавиатура ===
+# Keyboard
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 main_kb.add(KeyboardButton("➕ Добавить"), KeyboardButton("📋 Список"))
 
 user_state = {}
 admin_state = {}
 
-# === Получение цен с WB API ===
+# WB price fetch
 async def get_price_wb(nm):
     nm_str = str(nm)
     vol = nm_str[:3]
     part = nm_str[:5]
     servers = ["basket-01.wb.ru", "basket-02.wb.ru", "basket-03.wb.ru"]
     headers = {"User-Agent": "Mozilla/5.0"}
-
-    async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+    timeout = aiohttp.ClientTimeout(total=10)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
         for server in servers:
             url = f"https://{server}/vol{vol}/part{part}/info/{nm_str}.json"
             try:
@@ -53,33 +52,24 @@ async def get_price_wb(nm):
                         data = await resp.json()
                         price = data.get("price", {}).get("priceU")
                         sale_price = data.get("price", {}).get("salePriceU")
-                        if price is None:
-                            continue
-                        return price // 100, (sale_price or price) // 100
-            except Exception as e:
-                logging.error(f"Ошибка запроса {url}: {e}")
+                        if price is not None:
+                            return price // 100, (sale_price or price) // 100
+            except Exception:
+                continue
     return None, None
 
-# === Асинхронные обёртки для Google Sheets ===
-async def async_append_row(row):
-    await asyncio.to_thread(sheet.append_row, row)
+# Thread-wrapped sheet operations
+async def async_to_thread(func, *args):
+    return await asyncio.to_thread(func, *args)
 
-async def async_get_all_records():
-    return await asyncio.to_thread(sheet.get_all_records)
+async def async_append_row(row): await async_to_thread(sheet.append_row, row)
+async def async_get_all_records(): return await async_to_thread(sheet.get_all_records)
+async def async_get_all_values(): return await async_to_thread(sheet.get_all_values)
+async def async_update_cell(row, col, value): await async_to_thread(sheet.update_cell, row, col, value)
+async def async_delete_row(row): await async_to_thread(sheet.delete_rows, row)
+async def async_row_values(row): return await async_to_thread(sheet.row_values, row)
 
-async def async_get_all_values():
-    return await asyncio.to_thread(sheet.get_all_values)
-
-async def async_update_cell(row, col, value):
-    await asyncio.to_thread(sheet.update_cell, row, col, value)
-
-async def async_delete_row(row):
-    await asyncio.to_thread(sheet.delete_rows, row)
-
-async def async_row_values(row):
-    return await asyncio.to_thread(sheet.row_values, row)
-
-# === Хендлеры пользователя ===
+# Handlers (start, add, list, edit, delete) — остались без изменений функционально
 @dp.message_handler(commands=["start"])
 async def cmd_start(msg: types.Message):
     await msg.answer("Привет! Я отслеживаю цену товара на Wildberries.", reply_markup=main_kb)
@@ -147,7 +137,7 @@ async def handle_edit_price(msg: types.Message):
     await async_update_cell(data['row_idx'], 5, 'FALSE')
     await msg.answer("Цена обновлена.", reply_markup=main_kb)
 
-# === Админ-рассылка ===
+# Admin broadcast — тоже без изменений
 @dp.message_handler(lambda m: m.from_user.id == ADMIN_ID and m.text == "/broadcast")
 async def start_broadcast(msg: types.Message):
     admin_state[ADMIN_ID] = {'step': 'await_content'}
@@ -161,14 +151,13 @@ async def collect_broadcast(msg: types.Message):
         'text': msg.caption or msg.text or "",
         'file_id': (
             msg.photo[-1].file_id if msg.photo else
-            msg.video.file_id if msg.video else None
+            getattr(msg.video, 'file_id', None)
         )
     }
-    markup = InlineKeyboardMarkup()
-    markup.add(
+    markup = InlineKeyboardMarkup().add(
         InlineKeyboardButton("✅ Отправить", callback_data="send_broadcast"),
         InlineKeyboardButton("❌ Отменить", callback_data="cancel_broadcast"),
-        InlineKeyboardButton("✏️ Изменить", callback_data="edit_broadcast")
+        InlineKeyboardButton("✏️ Изменить", callback_data="edit_broadcast"),
     )
     if msg.content_type == "photo":
         await msg.answer_photo(admin_state[ADMIN_ID]['file_id'], caption=admin_state[ADMIN_ID]['text'], reply_markup=markup)
@@ -177,7 +166,7 @@ async def collect_broadcast(msg: types.Message):
     else:
         await msg.answer(admin_state[ADMIN_ID]['text'], reply_markup=markup)
 
-@dp.callback_query_handler(lambda c: c.data.startswith("send_") or c.data.startswith("cancel_") or c.data.startswith("edit_"))
+@dp.callback_query_handler(lambda c: c.data.startswith(("send_", "cancel_", "edit_")))
 async def broadcast_actions(c: types.CallbackQuery):
     action = c.data
     await c.answer()
@@ -188,8 +177,8 @@ async def broadcast_actions(c: types.CallbackQuery):
         admin_state[ADMIN_ID]['step'] = 'await_content'
         await c.message.edit_text("✏️ Отправьте новое сообщение:")
     elif action == "send_broadcast":
-        users = set(row[0] for row in await async_get_all_values()[1:])
-        s, f = 0, 0
+        users = set(row[0] for row in (await async_get_all_values())[1:])
+        s = f = 0
         for uid in users:
             try:
                 if admin_state[ADMIN_ID]['content_type'] == 'photo':
@@ -199,36 +188,38 @@ async def broadcast_actions(c: types.CallbackQuery):
                 else:
                     await bot.send_message(uid, admin_state[ADMIN_ID]['text'])
                 s += 1
-            except Exception as e:
-                logging.warning(f"Ошибка отправки пользователю {uid}: {e}")
+            except Exception:
                 f += 1
         admin_state.pop(ADMIN_ID, None)
         await bot.send_message(ADMIN_ID, f"✅ Рассылка завершена.\nУспешно: {s}\nОшибки: {f}")
 
-# === Проверка цен ===
+# Price check job
 async def check_prices():
     rows = await async_get_all_records()
-    for i, row in enumerate(rows, start=2):
+    sem = asyncio.Semaphore(5)
+    async def proc(i, row):
         try:
             uid = int(row["UserID"])
-            artikel = row["Artikel"]
+            art = row["Artikel"]
             target = float(row["TargetPrice"])
             notified = row["Notified"] == "TRUE"
-            price, _ = await get_price_wb(artikel)
-            if price is None:
-                continue
+            async with sem:
+                price, _ = await get_price_wb(art)
+            if price is None: return
             await async_update_cell(i, 4, price)
             if price <= target and not notified:
-                url = f"https://www.wildberries.ru/catalog/{artikel}/detail.aspx"
-                await bot.send_message(uid, f"🔔 {artikel} подешевел до {price}₽\n{url}")
+                url = f"https://www.wildberries.ru/catalog/{art}/detail.aspx"
+                await bot.send_message(uid, f"🔔 {art} подешевел до {price}₽\n{url}")
                 await async_update_cell(i, 5, 'TRUE')
             elif price > target and notified:
                 await async_update_cell(i, 5, 'FALSE')
-            await asyncio.sleep(0.2)
-        except Exception as e:
-            logging.warning(f"Ошибка в check_prices: {e}")
+        except Exception:
+            logging.exception("Ошибка в check_prices row")
+    tasks = [proc(i, row) for i, row in enumerate(rows, start=2)]
+    await asyncio.gather(*tasks)
+    logging.info(f"✅ Проверка цен завершена ({len(tasks)} позиций)")
 
-# === Webhook + Render старт ===
+# Webhook setup
 app = web.Application()
 
 async def webhook_handler(request):
@@ -237,16 +228,13 @@ async def webhook_handler(request):
     await dp.process_update(update)
     return web.Response()
 
-async def ping(request):
-    return web.Response(text="pong")
-
 app.router.add_post("/webhook", webhook_handler)
-app.router.add_get("/ping", ping)
+app.router.add_get("/ping", lambda r: web.Response(text="pong"))
 
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
     scheduler = AsyncIOScheduler()
-    scheduler.add_job(check_prices, "interval", minutes=1)
+    scheduler.add_job(check_prices, "interval", minutes=1, next_run_time=None)
     scheduler.start()
     logging.info("Бот и webhook запущены.")
 
@@ -258,5 +246,5 @@ app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
 if __name__ == "__main__":
-    port = int(os.getenv("PORT", "8080"))
+    port = int(os.getenv("PORT","8080"))
     web.run_app(app, port=port)
