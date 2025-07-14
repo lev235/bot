@@ -208,6 +208,7 @@ app = web.Application()
 
 async def webhook_handler(request):
     try:
+        Bot.set_current(bot)  # <== ВАЖНО
         data = await request.json()
         update = types.Update(**data)
         await dp.process_update(update)
