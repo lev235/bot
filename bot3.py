@@ -11,7 +11,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 
 # === Конфигурация ===
 API_TOKEN = os.getenv("BOT_TOKEN")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://your-service.onrender.com/webhook
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # Например: https://your-service.onrender.com/webhook
 ADMIN_ID = int(os.getenv("ADMIN_ID", 123456789))
 
 SPREADSHEET_NAME = 'wb_tracker'
@@ -25,6 +25,7 @@ sheet = gc.open(SPREADSHEET_NAME).sheet1
 
 # === Telegram Bot ===
 bot = Bot(token=API_TOKEN)
+Bot.set_current(bot)  # Важно — сразу установить текущий бот
 dp = Dispatcher(bot)
 
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
@@ -114,6 +115,7 @@ async def handle_edit_price(message: types.Message):
 
 # === Проверка цен ===
 async def check_prices():
+    Bot.set_current(bot)  # Установка текущего бота в контекст для фоновой задачи
     rows = sheet.get_all_records()
     for i, row in enumerate(rows, start=2):
         user_id, artikel = row['UserID'], row['Artikel']
@@ -138,6 +140,7 @@ app = web.Application()
 async def webhook_handler(request):
     data = await request.json()
     update = types.Update(**data)
+    Bot.set_current(bot)  # ВАЖНО: ставим текущий бот в контекст при обработке webhook
     await dp.process_update(update)
     return web.Response()
 
