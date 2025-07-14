@@ -1,8 +1,8 @@
 import os
 import logging
-import json
 import gspread
 import aiohttp
+import asyncio
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
@@ -36,7 +36,7 @@ main_kb.add(KeyboardButton("➕ Добавить"), KeyboardButton("📋 Спи�
 user_state = {}
 admin_state = {}
 
-# === Получение цен с альтернативного WB API ===
+# === Получение цен с WB API ===
 async def get_price(nm):
     try:
         url = f'https://search.wb.ru/exactmatch/ru/common/v5/search?query={nm}&resultset=catalog'
@@ -176,24 +176,16 @@ async def broadcast_actions(c: types.CallbackQuery):
                 else:
                     await bot.send_message(uid, admin_state[ADMIN_ID]['text'])
                 s += 1
-            except:
+            except Exception as e:
+                logging.warning(f"Ошибка отправки пользователю {uid}: {e}")
                 f += 1
         admin_state.pop(ADMIN_ID, None)
         await bot.send_message(ADMIN_ID, f"✅ Рассылка завершена.\nУспешно: {s}\nОшибки: {f}")
 
 # === Проверка цен ===
-import asyncio
-import logging
-
-sem = asyncio.Semaphore(5)  # одновременно не более 5 запросов к WB
-
-async def get_price_safe(nm):
-    async with sem:
-        return await get_price(nm)
-
 async def check_prices():
     rows = sheet.get_all_records()
-    sem = asyncio.Semaphore(5)  # Ограничим параллельные запросы к WB
+    sem = asyncio.Semaphore(5)
 
     async def process_row(i, uid, nm, target, notified):
         async with sem:
@@ -202,16 +194,22 @@ async def check_prices():
             logging.warning(f"[WB search] Товар не найден или ошибка: nm={nm}")
             return
         try:
-            sheet.update_cell(i, 4, price)  # Обновляем колонку с ценой
-            if price <= target and not notified:
-                await bot.send_message(uid, f"🔔 Товар {nm} подешевел до {price}₽!\nhttps://www.wildberries.ru/catalog/{nm}/detail.aspx")
-                sheet.update_cell(i, 5, 'TRUE')  # Уведомление отправлено
-            elif price > target and notified:
-                sheet.update_cell(i, 5, 'FALSE')  # Цена снова выше — сбросить флаг уведомления
-        except Exception as e:
-            logging.error(f"Ошибка при обработке товара {nm} для пользователя {uid}: {e}")
+            try:
+                sheet.update_cell(i, 4, price)  # Обновляем колонку с ценой
+            except Exception as e:
+                logging.error(f"[Sheets] Не удалось обновить цену: {e}")
 
-    # Запускаем обработку всех строк параллельно
+            if price <= target and not notified:
+                try:
+                    await bot.send_message(uid, f"🔔 Товар {nm} подешевел до {price}₽!\nhttps://www.wildberries.ru/catalog/{nm}/detail.aspx")
+                    sheet.update_cell(i, 5, 'TRUE')
+                except Exception as e:
+                    logging.error(f"[Telegram] Ошибка отправки сообщения: {e}")
+            elif price > target and notified:
+                sheet.update_cell(i, 5, 'FALSE')
+        except Exception as e:
+            logging.error(f"[Обработка строки] Ошибка: {e}")
+
     tasks = []
     for i, row in enumerate(rows, start=2):
         nm = row['Artikel']
@@ -221,6 +219,7 @@ async def check_prices():
         tasks.append(process_row(i, uid, nm, target, notified))
 
     await asyncio.gather(*tasks)
+    logging.info(f"✅ Завершена проверка цен ({len(tasks)} товаров)")
 
 # === aiohttp Webhook ===
 app = web.Application()
@@ -231,7 +230,8 @@ async def webhook_handler(request):
     await dp.process_update(update)
     return web.Response()
 
-async def ping(request): return web.Response(text="pong")
+async def ping(request):
+    return web.Response(text="pong")
 
 app.router.add_post("/webhook", webhook_handler)
 app.router.add_get("/ping", ping)
