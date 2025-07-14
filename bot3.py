@@ -33,17 +33,32 @@ user_state = {}
 admin_state = {}
 
 # === Получение цен с WB ===
+import json
+
 def get_price(nm):
     url = f'https://card.wb.ru/cards/detail?appType=1&curr=rub&dest=-1257786&spp=0&nm={nm}'
     try:
-        resp = requests.get(url)
-        data = resp.json()
+        resp = requests.get(url, timeout=10)
+        if resp.status_code != 200:
+            logging.error(f"[WB] Статус != 200: {resp.status_code}")
+            return None, None
+        if not resp.text or resp.text.strip() == '':
+            logging.error("[WB] Пустой ответ")
+            return None, None
+        try:
+            data = resp.json()
+        except json.JSONDecodeError:
+            logging.error(f"[WB] Невалидный JSON. Ответ: {resp.text[:200]}...")
+            return None, None
+
         products = data.get('data', {}).get('products')
         if products:
             item = products[0]
             return item.get('priceU', 0) // 100, item.get('salePriceU', 0) // 100
+        else:
+            logging.warning(f"[WB] Продукты не найдены в ответе: {resp.text[:200]}")
     except Exception as e:
-        logging.error(f"Ошибка запроса WB: {e}")
+        logging.exception(f"Ошибка запроса WB: {e}")
     return None, None
 
 # === Хендлеры пользователя ===
