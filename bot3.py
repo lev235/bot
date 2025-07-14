@@ -193,7 +193,7 @@ async def check_prices():
 
     async def process_row(i, uid, nm, target, notified):
         async with sem:
-            price, _ = await get_price(nm)
+            price, _ = await get_price_wb(nm)  # Здесь исправлено
         if price is None:
             logging.warning(f"[WB search] Товар не найден или ошибка: nm={nm}")
             return
