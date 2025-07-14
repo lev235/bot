@@ -1,5 +1,5 @@
 aiogram==2.25.1
-aiohttp==3.9.3
+aiohttp==3.8.6
 requests
 gspread
 oauth2client
