@@ -170,7 +170,10 @@ async def handle_broadcast_actions(callback: types.CallbackQuery):
             except:
                 fail += 1
         admin_state.pop(ADMIN_ID, None)
-        await callback.message.edit_text(f"✅ Рассылка завершена.\nУспешно: {success}\nОшибки: {fail}")
+        try:
+            await callback.message.edit_text(f"✅ Рассылка завершена.\nУспешно: {success}\nОшибки: {fail}")
+        except Exception:
+            await bot.send_message(ADMIN_ID, f"✅ Рассылка завершена.\nУспешно: {success}\nОшибки: {fail}")
 
 # === Проверка цен ===
 async def check_prices():
