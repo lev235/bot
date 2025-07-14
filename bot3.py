@@ -38,10 +38,13 @@ admin_state = {}
 
 # === Получение цен с WB API ===
 async def get_price(nm):
+    url = f'https://search.wb.ru/exactmatch/ru/common/v5/search?query={nm}&resultset=catalog'
     try:
-        url = f'https://search.wb.ru/exactmatch/ru/common/v5/search?query={nm}&resultset=catalog'
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
             async with session.get(url) as resp:
+                if resp.status == 404:
+                    logging.warning(f"[WB search] Товар не найден (404): nm={nm}")
+                    return None, None
                 if resp.status != 200:
                     logging.error(f"[WB search] Статус != 200: {resp.status}, nm={nm}")
                     return None, None
