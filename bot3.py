@@ -202,11 +202,16 @@ async def check_prices():
         price, _ = await get_price_safe(nm)
         if price is None:
             logging.warning(f"[WB search] Товар не найден или ошибка: nm={nm}")
-            return
-        sheet.update_cell(i, 4, price)
-        if price <= target and not notified:
-            try:
-                await bot.send_message(uid, f"🔔 Товар {nm} подешевел до"
+        return
+    sheet.update_cell(i, 4, price)  # Обновляем колонку с ценой
+    if price <= target and not notified:
+        try:
+            await bot.send_message(uid, f"🔔 Товар {nm} подешевел до {price}₽!\nhttps://www.wildberries.ru/catalog/{nm}/detail.aspx")
+            sheet.update_cell(i, 5, 'TRUE')  # Отмечаем, что уведомление отправлено
+        except Exception as e:
+            logging.error(f"Ошибка отправки уведомления {nm} → {uid}: {e}")
+    elif price > target and notified:
+        sheet.update_cell(i, 5, 'FALSE')
 
 # === aiohttp Webhook ===
 app = web.Application()
