@@ -88,7 +88,7 @@ async def show_list(msg: types.Message):
     for idx, row in enumerate(rows, start=2):
         if int(row['UserID']) == msg.from_user.id:
             items.append(f"📦 {row['Artikel']} → ≤ {row['TargetPrice']}₽ (посл.: {row['LastPrice'] or '–'})")
-            markup.insert(
+            markup.add(
                 InlineKeyboardButton("Изменить", callback_data=f"edit_{idx}"),
                 InlineKeyboardButton("Удалить", callback_data=f"del_{idx}")
             )
