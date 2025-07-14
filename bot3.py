@@ -182,25 +182,31 @@ async def broadcast_actions(c: types.CallbackQuery):
         await bot.send_message(ADMIN_ID, f"✅ Рассылка завершена.\nУспешно: {s}\nОшибки: {f}")
 
 # === Проверка цен ===
+import asyncio
+import logging
+
+sem = asyncio.Semaphore(5)  # одновременно не более 5 запросов к WB
+
+async def get_price_safe(nm):
+    async with sem:
+        return await get_price(nm)
+
 async def check_prices():
     rows = sheet.get_all_records()
+    tasks = []
     for i, row in enumerate(rows, start=2):
-        uid = int(row['UserID'])
         nm = row['Artikel']
-        target = float(row['TargetPrice'])
-        notified = row.get('Notified') == 'TRUE'
-        price, _ = await get_price(nm)
+        tasks.append((i, int(row['UserID']), nm, float(row['TargetPrice']), row.get('Notified') == 'TRUE'))
+
+    async def process_row(i, uid, nm, target, notified):
+        price, _ = await get_price_safe(nm)
         if price is None:
-            continue
+            logging.warning(f"[WB search] Товар не найден или ошибка: nm={nm}")
+            return
         sheet.update_cell(i, 4, price)
         if price <= target and not notified:
             try:
-                await bot.send_message(uid, f"🔔 Товар {nm} подешевел до {price}₽!\nhttps://www.wildberries.ru/catalog/{nm}/detail.aspx")
-                sheet.update_cell(i, 5, 'TRUE')
-            except Exception as e:
-                logging.error(f"Ошибка уведомления {nm} → {uid}: {e}")
-        elif price > target and notified:
-            sheet.update_cell(i, 5, 'FALSE')
+                await bot.send_message(uid, f"🔔 Товар {nm} подешевел до"
 
 # === aiohttp Webhook ===
 app = web.Application()
