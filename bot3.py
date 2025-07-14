@@ -29,12 +29,12 @@ creds = ServiceAccountCredentials.from_json_keyfile_name(GOOGLE_CREDS, scope)
 gspread_client = gspread.authorize(creds)
 sheet = gspread_client.open(SHEET_NAME).sheet1
 
-# === Bot ===
+# === Bot и Dispatcher ===
 bot = Bot(token=API_TOKEN)
 Bot.set_current(bot)
 dp = Dispatcher(bot)
 
-# === Состояния ===
+# === Состояния пользователей ===
 user_state = {}
 admin_state = {}
 
@@ -42,11 +42,11 @@ admin_state = {}
 main_kb = ReplyKeyboardMarkup(resize_keyboard=True)
 main_kb.add(KeyboardButton("➕ Добавить"), KeyboardButton("📋 Список"))
 
-# === Google Sheets helper ===
+# === Помощник для запуска blocking функций в отдельном потоке ===
 async def to_thread(func, *args, **kwargs):
     return await asyncio.to_thread(func, *args, **kwargs)
 
-# === Получение цены WB ===
+# === Получение цены с Wildberries ===
 async def get_price(nm):
     nm_str = str(nm)
     vol = nm_str[:3]
@@ -71,7 +71,8 @@ async def get_price(nm):
                 continue
     return None, None
 
-# === Хендлеры ===
+# === Обработчики команд и сообщений ===
+
 @dp.message_handler(commands=["start"])
 async def start(msg: types.Message):
     await msg.answer("Привет! Я отслеживаю цену товара на Wildberries.", reply_markup=main_kb)
@@ -92,7 +93,7 @@ async def get_price_target(msg: types.Message):
     try:
         price = float(msg.text.strip())
     except:
-        return await msg.answer("Неверно.")
+        return await msg.answer("Неверный ввод цены. Попробуйте ещё раз.")
     data = user_state.pop(msg.from_user.id)
     await to_thread(sheet.append_row, [msg.from_user.id, data['art'], price, '', 'FALSE'])
     await msg.answer("✅ Добавлено", reply_markup=main_kb)
@@ -133,7 +134,7 @@ async def new_price(msg: types.Message):
     try:
         price = float(msg.text.strip())
     except:
-        return await msg.answer("Неверно.")
+        return await msg.answer("Неверный ввод цены.")
     data = user_state.pop(msg.from_user.id)
     await to_thread(sheet.update_cell, data['idx'], 3, price)
     await to_thread(sheet.update_cell, data['idx'], 5, 'FALSE')
@@ -183,7 +184,7 @@ async def bc_action(c: types.CallbackQuery):
             else:
                 await bot.send_message(uid, admin_state[ADMIN_ID]['text'])
             success += 1
-        except:
+        except Exception:
             fail += 1
     await bot.send_message(ADMIN_ID, f"✅ {success} отправлено, ❌ {fail} ошибок.")
     admin_state.pop(ADMIN_ID, None)
@@ -204,20 +205,22 @@ async def check_prices():
                     price, _ = await get_price(art)
                 if price is None:
                     return
+                # Обновляем последнюю цену
                 await to_thread(sheet.update_cell, i, 4, price)
                 if price <= target and not notified:
                     await bot.send_message(uid, f"🔔 {art} подешевел до {price}₽\nhttps://www.wildberries.ru/catalog/{art}/detail.aspx")
                     await to_thread(sheet.update_cell, i, 5, 'TRUE')
                 elif price > target and notified:
                     await to_thread(sheet.update_cell, i, 5, 'FALSE')
-            except Exception as e:
-                logger.exception("Ошибка в check_prices")
+            except Exception:
+                logger.exception(f"Ошибка в check_prices при обработке строки {i}")
+
         await asyncio.gather(*(proc(i, row) for i, row in enumerate(rows, start=2)))
         logger.info("✅ check_prices завершена")
-    except Exception as e:
+    except Exception:
         logger.exception("Ошибка в основной check_prices")
 
-# === Webhook & сервер ===
+# === Webhook и сервер ===
 app = web.Application()
 
 async def webhook_handler(request):
@@ -226,7 +229,7 @@ async def webhook_handler(request):
         update = types.Update(**data)
         Bot.set_current(bot)
         await dp.process_update(update)
-    except Exception as e:
+    except Exception:
         logger.exception("Ошибка webhook")
     return web.Response()
 
@@ -236,19 +239,23 @@ async def ping_handler(request):
 app.router.add_post("/webhook", webhook_handler)
 app.router.add_get("/ping", ping_handler)
 
+# === Планировщик ===
+scheduler = AsyncIOScheduler()
+
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
-    scheduler = AsyncIOScheduler()
-    scheduler.add_job(check_prices, "interval", minutes=1)
+    scheduler.add_job(check_prices, "interval", minutes=1)  # НЕ используем create_task!
     scheduler.start()
     logger.info("🚀 Бот запущен")
 
 async def on_shutdown(app):
     await bot.delete_webhook()
+    scheduler.shutdown()
     logger.info("🛑 Webhook удалён")
 
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
 
+# === Запуск приложения ===
 if __name__ == "__main__":
     web.run_app(app, port=PORT)
