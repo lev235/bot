@@ -188,23 +188,23 @@ async def broadcast_actions(c: types.CallbackQuery):
 
 # === Проверка цен ===
 async def check_prices():
-    rows = await async_get_all_records()
+    rows = sheet.get_all_records()  # <-- заменено
     for i, row in enumerate(rows, start=2):
         try:
             uid = int(row["UserID"])
             artikel = row["Artikel"]
             target = float(row["TargetPrice"])
             notified = row["Notified"] == "TRUE"
-            price, _ = await get_price(artikel)
+            price, _ = await get_price_wb(artikel)  # заменил get_price → get_price_wb
             if price is None:
                 continue
-            await async_update_cell(i, 4, price)
+            sheet.update_cell(i, 4, price)  # заменено
             if price <= target and not notified:
                 url = f"https://www.wildberries.ru/catalog/{artikel}/detail.aspx"
                 await bot.send_message(uid, f"🔔 {artikel} подешевел до {price}₽\n{url}")
-                await async_update_cell(i, 5, 'TRUE')
+                sheet.update_cell(i, 5, 'TRUE')  # заменено
             elif price > target and notified:
-                await async_update_cell(i, 5, 'FALSE')
+                sheet.update_cell(i, 5, 'FALSE')  # заменено
             await asyncio.sleep(0.2)
         except Exception as e:
             logging.warning(f"Ошибка в check_prices: {e}")
