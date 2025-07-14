@@ -193,25 +193,34 @@ async def get_price_safe(nm):
 
 async def check_prices():
     rows = sheet.get_all_records()
+    sem = asyncio.Semaphore(5)  # Ограничим параллельные запросы к WB
+
+    async def process_row(i, uid, nm, target, notified):
+        async with sem:
+            price, _ = await get_price(nm)
+        if price is None:
+            logging.warning(f"[WB search] Товар не найден или ошибка: nm={nm}")
+            return
+        try:
+            sheet.update_cell(i, 4, price)  # Обновляем колонку с ценой
+            if price <= target and not notified:
+                await bot.send_message(uid, f"🔔 Товар {nm} подешевел до {price}₽!\nhttps://www.wildberries.ru/catalog/{nm}/detail.aspx")
+                sheet.update_cell(i, 5, 'TRUE')  # Уведомление отправлено
+            elif price > target and notified:
+                sheet.update_cell(i, 5, 'FALSE')  # Цена снова выше — сбросить флаг уведомления
+        except Exception as e:
+            logging.error(f"Ошибка при обработке товара {nm} для пользователя {uid}: {e}")
+
+    # Запускаем обработку всех строк параллельно
     tasks = []
     for i, row in enumerate(rows, start=2):
         nm = row['Artikel']
-        tasks.append((i, int(row['UserID']), nm, float(row['TargetPrice']), row.get('Notified') == 'TRUE'))
+        uid = int(row['UserID'])
+        target = float(row['TargetPrice'])
+        notified = row.get('Notified') == 'TRUE'
+        tasks.append(process_row(i, uid, nm, target, notified))
 
-    async def process_row(i, uid, nm, target, notified):
-        price, _ = await get_price_safe(nm)
-        if price is None:
-            logging.warning(f"[WB search] Товар не найден или ошибка: nm={nm}")
-        return
-    sheet.update_cell(i, 4, price)  # Обновляем колонку с ценой
-    if price <= target and not notified:
-        try:
-            await bot.send_message(uid, f"🔔 Товар {nm} подешевел до {price}₽!\nhttps://www.wildberries.ru/catalog/{nm}/detail.aspx")
-            sheet.update_cell(i, 5, 'TRUE')  # Отмечаем, что уведомление отправлено
-        except Exception as e:
-            logging.error(f"Ошибка отправки уведомления {nm} → {uid}: {e}")
-    elif price > target and notified:
-        sheet.update_cell(i, 5, 'FALSE')
+    await asyncio.gather(*tasks)
 
 # === aiohttp Webhook ===
 app = web.Application()
