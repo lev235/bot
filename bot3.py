@@ -188,42 +188,38 @@ async def broadcast_actions(c: types.CallbackQuery):
 
 # === Проверка цен ===
 async def check_prices():
-    rows = sheet.get_all_records()
-    sem = asyncio.Semaphore(5)
-
-    async def process_row(i, uid, nm, target, notified):
-        async with sem:
-            price, _ = await get_price_wb(nm)  # Здесь исправлено
-        if price is None:
-            logging.warning(f"[WB search] Товар не найден или ошибка: nm={nm}")
-            return
-        try:
-            try:
-                sheet.update_cell(i, 4, price)  # Обновляем колонку с ценой
-            except Exception as e:
-                logging.error(f"[Sheets] Не удалось обновить цену: {e}")
-
-            if price <= target and not notified:
-                try:
-                    await bot.send_message(uid, f"🔔 Товар {nm} подешевел до {price}₽!\nhttps://www.wildberries.ru/catalog/{nm}/detail.aspx")
-                    sheet.update_cell(i, 5, 'TRUE')
-                except Exception as e:
-                    logging.error(f"[Telegram] Ошибка отправки сообщения: {e}")
-            elif price > target and notified:
-                sheet.update_cell(i, 5, 'FALSE')
-        except Exception as e:
-            logging.error(f"[Обработка строки] Ошибка: {e}")
-
-    tasks = []
+    rows = await async_get_all_records()
     for i, row in enumerate(rows, start=2):
-        nm = row['Artikel']
-        uid = int(row['UserID'])
-        target = float(row['TargetPrice'])
-        notified = row.get('Notified') == 'TRUE'
-        tasks.append(process_row(i, uid, nm, target, notified))
+        try:
+            uid = int(row["UserID"])
+            artikel = row["Artikel"]
+            target = float(row["TargetPrice"])
+            notified = row["Notified"] == "TRUE"
+            price, _ = await get_price(artikel)
+            if price is None:
+                continue
+            await async_update_cell(i, 4, price)
+            if price <= target and not notified:
+                url = f"https://www.wildberries.ru/catalog/{artikel}/detail.aspx"
+                await bot.send_message(uid, f"🔔 {artikel} подешевел до {price}₽\n{url}")
+                await async_update_cell(i, 5, 'TRUE')
+            elif price > target and notified:
+                await async_update_cell(i, 5, 'FALSE')
+            await asyncio.sleep(0.2)
+        except Exception as e:
+            logging.warning(f"Ошибка в check_prices: {e}")
 
-    await asyncio.gather(*tasks)
-    logging.info(f"✅ Завершена проверка цен ({len(tasks)} товаров)")
+async def periodic_check_prices():
+    iteration = 0
+    while True:
+        try:
+            logging.info("Запуск проверки цен...")
+            await check_prices()
+            iteration += 1
+            logging.info(f"Проверка цен выполнена {iteration} раз")
+        except Exception:
+            logging.exception("Ошибка в цикле проверки цен")
+        await asyncio.sleep(3600)
 
 # === aiohttp Webhook ===
 app = web.Application()
