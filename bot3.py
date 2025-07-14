@@ -1,8 +1,8 @@
 import os
 import logging
-import requests
 import json
 import gspread
+import aiohttp
 from aiogram import Bot, Dispatcher, types
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, InlineKeyboardMarkup, InlineKeyboardButton
 from aiohttp import web
@@ -37,20 +37,21 @@ user_state = {}
 admin_state = {}
 
 # === Получение цен с альтернативного WB API ===
-def get_price(nm):
+async def get_price(nm):
     try:
         url = f'https://search.wb.ru/exactmatch/ru/common/v5/search?query={nm}&resultset=catalog'
-        resp = requests.get(url, timeout=10)
-        if resp.status_code != 200:
-            logging.error(f"[WB search] Статус != 200: {resp.status_code}, nm={nm}")
-            return None, None
-        data = resp.json()
-        products = data.get("data", {}).get("products", [])
-        if not products:
-            logging.warning(f"[WB search] Товар не найден: nm={nm}")
-            return None, None
-        item = products[0]
-        return item.get("priceU", 0) // 100, item.get("salePriceU", item.get("priceU", 0)) // 100
+        async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=10)) as session:
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    logging.error(f"[WB search] Статус != 200: {resp.status}, nm={nm}")
+                    return None, None
+                data = await resp.json()
+                products = data.get("data", {}).get("products", [])
+                if not products:
+                    logging.warning(f"[WB search] Товар не найден: nm={nm}")
+                    return None, None
+                item = products[0]
+                return item.get("priceU", 0) // 100, item.get("salePriceU", item.get("priceU", 0)) // 100
     except Exception as e:
         logging.exception(f"[WB search] Ошибка при получении цены nm={nm}: {e}")
         return None, None
@@ -188,7 +189,7 @@ async def check_prices():
         nm = row['Artikel']
         target = float(row['TargetPrice'])
         notified = row.get('Notified') == 'TRUE'
-        price, _ = get_price(nm)
+        price, _ = await get_price(nm)
         if price is None:
             continue
         sheet.update_cell(i, 4, price)
