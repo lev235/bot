@@ -120,7 +120,7 @@ async def cb_edit(c: types.CallbackQuery):
     row = await to_thread(sheet.row_values, idx)
     user_state[c.from_user.id] = {'step': 'edit_price', 'idx': idx, 'artikel': row[1]}
     await c.answer()
-    await c.message.answer(f"Новая цена для {row[1]} (бывшая {row[2]}):")
+    await c.message.answer(f"Новая цена для {row[1]} (была {row[2]}):")
 
 @dp.message_handler(lambda m: user_state.get(m.from_user.id, {}).get('step') == 'edit_price')
 async def msg_edit_price(msg: types.Message):
@@ -207,23 +207,33 @@ async def check_prices():
         except:
             logging.exception("Ошибка в check_prices")
     await asyncio.gather(*(proc(i, r) for i, r in enumerate(rows, start=2)))
-    logging.info("Check_prices выполнена")
+    logging.info("✅ check_prices завершена")
 
 # Webhook
 app = web.Application()
-app.router.add_post("/webhook", lambda req: (await dp.process_update(types.Update(**await req.json())), web.Response()))
-app.router.add_get("/ping", lambda req: web.Response(text="pong"))
+
+async def webhook_handler(request):
+    data = await request.json()
+    update = types.Update(**data)
+    await dp.process_update(update)
+    return web.Response()
+
+async def ping_handler(request):
+    return web.Response(text="pong")
+
+app.router.add_post("/webhook", webhook_handler)
+app.router.add_get("/ping", ping_handler)
 
 async def on_startup(app):
     await bot.set_webhook(WEBHOOK_URL)
     sched = AsyncIOScheduler()
     sched.add_job(check_prices, "interval", minutes=1)
     sched.start()
-    logging.info("Запуск бота")
+    logging.info("🚀 Бот запущен")
 
 async def on_shutdown(app):
     await bot.delete_webhook()
-    logging.info("Webhook удалён")
+    logging.info("🛑 Webhook удалён")
 
 app.on_startup.append(on_startup)
 app.on_shutdown.append(on_shutdown)
