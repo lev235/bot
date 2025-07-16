@@ -16,7 +16,7 @@ from google.oauth2.service_account import Credentials
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")         # https://your-app.onrender.com
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://your-app.onrender.com
 WEBHOOK_PATH = "/webhook"
 WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = int(os.getenv("PORT", 8000))
@@ -28,6 +28,7 @@ logging.basicConfig(level=logging.INFO)
 
 # === Инициализация бота ===
 bot = Bot(token=BOT_TOKEN)
+Bot.set_current(bot)  # 🛠️ ВАЖНО: установка текущего экземпляра
 dp = Dispatcher(bot)
 dp.middleware.setup(LoggingMiddleware())
 
@@ -156,6 +157,7 @@ async def handle_webhook(request):
     try:
         req_data = await request.json()
         update = Update.to_object(req_data)
+        Bot.set_current(bot)  # 🛠️ Устанавливаем bot перед обработкой update
         await dp.process_update(update)
         return web.Response()
     except Exception as e:
