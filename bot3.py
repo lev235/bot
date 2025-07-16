@@ -6,17 +6,17 @@ from datetime import datetime
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-API_TOKEN = 'YOUR_BOT_TOKEN'
-ADMIN_IDS = [123456789]  # ID админов
+API_TOKEN = '7695770485:AAHzdIlBP2Az1i13Em2c26_7C6h22dS0y2A'
+ADMIN_IDS = [6882817679]  # ID админов
 
-WEBHOOK_HOST = 'https://your-render-url.onrender.com'
+WEBHOOK_HOST = 'https://bot-ulgt.onrender.com'
 WEBHOOK_PATH = '/webhook'
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 
 WB_API_URL = "https://search.wb.ru/exactmatch/ru/common/v5/search"
 
 GOOGLE_CREDENTIALS_FILE = 'credentials.json'
-SPREADSHEET_NAME = 'WBPriceBot'
+SPREADSHEET_NAME = 'WB Price Tracker'
 
 # Инициализация
 logging.basicConfig(level=logging.INFO)
