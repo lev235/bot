@@ -1,120 +1,127 @@
-import os
 import logging
 import asyncio
+import aiohttp
+from aiogram import Bot, Dispatcher, types
+from aiogram.utils.executor import start_webhook
+import gspread
+from oauth2client.service_account import ServiceAccountCredentials
 from datetime import datetime
 
-from aiogram import Bot, Dispatcher, types
-from aiogram.contrib.middlewares.logging import LoggingMiddleware
-from aiogram.types import Update
+# Настройки
+API_TOKEN = '7695770485:AAHzdIlBP2Az1i13Em2c26_7C6h22dS0y2A'
+ADMIN_ID = 6882817679  # замените на ваш Telegram user_id
+WEBHOOK_HOST = 'https://bot-ulgt.onrender.com'
+WEBHOOK_PATH = '/webhook'
+WEBHOOK_URL = WEBHOOK_HOST + WEBHOOK_PATH
+WEBAPP_HOST = '0.0.0.0'
+WEBAPP_PORT = 10000
+WB_API_URL = "https://search.wb.ru/exactmatch/ru/common/v5/search"
 
-import gspread
-import aiohttp
-from aiohttp import web
-from google.oauth2.service_account import Credentials
-
-# === Настройки ===
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID"))
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")  # https://your-app.onrender.com
-WEBHOOK_PATH = "/webhook"
-WEBAPP_HOST = "0.0.0.0"
-WEBAPP_PORT = int(os.getenv("PORT", 8000))
-
-WB_API_URL = "https://card.wb.ru/cards/detail"
-
-# === Логгирование ===
+# Логирование
 logging.basicConfig(level=logging.INFO)
 
-# === Инициализация бота ===
-bot = Bot(token=BOT_TOKEN)
-Bot.set_current(bot)  # 🛠️ ВАЖНО: установка текущего экземпляра
+# Telegram bot
+bot = Bot(token=API_TOKEN)
+bot.set_current(bot)
 dp = Dispatcher(bot)
-dp.middleware.setup(LoggingMiddleware())
 
-# === Google Sheets ===
-GC = gspread.service_account(filename="credentials.json")
-SHEET = GC.open_by_key(SPREADSHEET_ID).sheet1
+# Подключение к Google Sheets
+scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
+client = gspread.authorize(creds)
+SHEET = client.open("WB Tracker").sheet1
 
-# === Команды ===
-
+# Команды
 @dp.message_handler(commands=["start"])
-async def start_cmd(message: types.Message):
-    await message.reply("👋 Добро пожаловать! Используй /add, /list, /remove для работы с товарами.")
+async def cmd_start(message: types.Message):
+    await message.answer("👋 Привет! Отправь /add, чтобы отслеживать цену товара на Wildberries.")
 
 @dp.message_handler(commands=["add"])
-async def add_product(message: types.Message):
+async def cmd_add(message: types.Message):
+    await message.answer("📦 Введите артикул товара:")
+    dp.register_message_handler(get_article, state="get_article")
+
+async def get_article(message: types.Message):
+    article = message.text.strip()
+    await message.answer("💰 Укажите желаемую цену:")
+    dp.register_message_handler(lambda m: save_product(m, article), state="get_price")
+
+async def save_product(message: types.Message, article: str):
     try:
-        _, article, target = message.text.strip().split()
-        target_price = float(target)
-        await asyncio.to_thread(SHEET.append_row, [message.from_user.id, article, target_price, "", ""])
-        await message.reply(f"✅ Артикул {article} добавлен с целью {target_price} ₽")
-    except Exception:
-        await message.reply("❗ Использование: /add <артикул> <целевая_цена>")
+        price = float(message.text.strip())
+        SHEET.append_row([str(message.from_user.id), article, price, "", ""])
+        await message.answer("✅ Товар добавлен! Я сообщу, когда цена упадёт ниже.")
+    except Exception as e:
+        await message.answer(f"⚠️ Ошибка: {e}")
+    finally:
+        dp.unregister_message_handler(None, state="get_price")
 
 @dp.message_handler(commands=["list"])
-async def list_products(message: types.Message):
+async def cmd_list(message: types.Message):
     try:
         user_id = str(message.from_user.id)
         records = await asyncio.to_thread(SHEET.get_all_records)
-        user_records = [r for r in records if str(r['user_id']) == user_id]
-        if not user_records:
-            await message.reply("🗃️ У вас нет добавленных товаров.")
-            return
-        reply = "📦 Ваши товары:\n\n"
-        for i, r in enumerate(user_records, 1):
-            reply += f"{i}. Артикул: {r['article']}, Цель: {r['target_price']} ₽, Последняя: {r.get('last_price', '-')}\n"
-        await message.reply(reply)
+        items = [f"{r['article']} → {r['target_price']} ₽" for r in records if r['user_id'] == user_id]
+        if items:
+            await message.answer("📋 Ваши товары:\n" + "\n".join(items))
+        else:
+            await message.answer("📭 У вас нет добавленных товаров.")
     except Exception as e:
-        logging.error(f"/list ошибка: {e}")
-        await message.reply("❗ Ошибка при получении списка товаров.")
+        await message.answer(f"❌ Ошибка: {e}")
 
 @dp.message_handler(commands=["remove"])
-async def remove_product(message: types.Message):
+async def cmd_remove(message: types.Message):
+    await message.answer("✏️ Введите артикул для удаления:")
+    dp.register_message_handler(delete_product, state="delete_article")
+
+async def delete_product(message: types.Message):
     try:
-        _, article = message.text.strip().split()
+        article = message.text.strip()
         user_id = str(message.from_user.id)
-        data = await asyncio.to_thread(SHEET.get_all_values)
-        rows = data[1:]
-        for i, row in enumerate(rows, start=2):
+        records = await asyncio.to_thread(SHEET.get_all_values)
+        for idx, row in enumerate(records[1:], start=2):  # пропускаем заголовок
             if row[0] == user_id and row[1] == article:
-                await asyncio.to_thread(SHEET.delete_rows, i)
-                await message.reply(f"🗑️ Артикул {article} удалён.")
-                return
-        await message.reply(f"🚫 Артикул {article} не найден.")
-    except Exception:
-        await message.reply("❗ Использование: /remove <артикул>")
+                await asyncio.to_thread(SHEET.delete_row, idx)
+                await message.answer("🗑️ Удалено!")
+                break
+        else:
+            await message.answer("❌ Не найдено.")
+    except Exception as e:
+        await message.answer(f"❗ Ошибка: {e}")
+    finally:
+        dp.unregister_message_handler(None, state="delete_article")
 
 @dp.message_handler(commands=["broadcast"])
-async def broadcast_cmd(message: types.Message):
+async def cmd_broadcast(message: types.Message):
     if message.from_user.id != ADMIN_ID:
-        return
-    if not message.reply_to_message:
-        await message.reply("Команда должна быть ответом на сообщение.")
-        return
+        return await message.answer("🚫 Доступ запрещён.")
+    await message.answer("📨 Отправьте текст рассылки (или фото/видео с подписью).")
+    dp.register_message_handler(handle_broadcast, content_types=types.ContentTypes.ANY, state="broadcast")
 
-    reply = message.reply_to_message
-    text = reply.text or reply.caption or ""
+async def handle_broadcast(message: types.Message):
     try:
-        records = await asyncio.to_thread(SHEET.get_all_records)
-        user_ids = list(set(str(r["user_id"]) for r in records))
-        for uid in user_ids:
+        users = set(row[0] for row in SHEET.get_all_values()[1:])
+        for uid in users:
             try:
-                if reply.photo:
-                    await bot.send_photo(uid, reply.photo[-1].file_id, caption=text)
-                elif reply.video:
-                    await bot.send_video(uid, reply.video.file_id, caption=text)
-                elif text:
-                    await bot.send_message(uid, text)
+                if message.photo:
+                    await bot.send_photo(uid, message.photo[-1].file_id, caption=message.caption or "")
+                elif message.video:
+                    await bot.send_video(uid, message.video.file_id, caption=message.caption or "")
+                elif message.text:
+                    await bot.send_message(uid, message.text)
             except Exception as e:
-                logging.warning(f"Ошибка рассылки пользователю {uid}: {e}")
-        await message.reply("📣 Рассылка отправлена.")
+                logging.error(f"Ошибка рассылки пользователю {uid}: {e}")
+        await message.answer("✅ Рассылка завершена.")
     except Exception as e:
-        logging.error(f"[broadcast] Ошибка рассылки: {e}")
-        await message.reply("❗ Ошибка при рассылке.")
+        await message.answer(f"❌ Ошибка рассылки: {e}")
+    finally:
+        dp.unregister_message_handler(None, state="broadcast")
 
-# === Фоновая проверка цен ===
+@dp.message_handler(commands=["ping"])
+async def cmd_ping(message: types.Message):
+    await message.answer("✅ Бот работает.")
 
+# Цикл отслеживания цен
 async def check_prices_loop():
     await asyncio.sleep(5)
     while True:
@@ -126,61 +133,37 @@ async def check_prices_loop():
                     article = rec['article']
                     target = float(rec['target_price'])
 
-                    params = {"nm": article}
                     async with aiohttp.ClientSession() as session:
-                        async with session.get(WB_API_URL, params=params, timeout=10) as resp:
+                        async with session.get(WB_API_URL, params={"nm": article}) as resp:
                             if resp.status != 200:
                                 continue
                             data = await resp.json()
                             current = data["data"]["products"][0]["priceU"] / 100
 
                     if current <= target:
-                        await bot.send_message(user_id, f"📉 Цена на {article} упала до {current} ₽ (цель: {target})")
+                        await bot.send_message(user_id, f"📉 Цена на товар {article} упала до {current} ₽")
 
-                    await asyncio.to_thread(
-                        SHEET.update,
-                        f"D{idx}:E{idx}",
-                        [[current, datetime.utcnow().isoformat()]]
-                    )
+                    await asyncio.to_thread(SHEET.update, f"D{idx}:E{idx}", [[current, datetime.utcnow().isoformat()]])
                 except Exception as e:
-                    logging.error(f"[Цикл] Ошибка для строки {idx}: {e}")
+                    logging.warning(f"Ошибка для {rec}: {e}")
         except Exception as e:
-            logging.critical(f"[Цикл] Общая ошибка: {e}")
+            logging.critical(f"Ошибка чтения таблицы: {e}")
         await asyncio.sleep(60 * 30)
 
-# === Webhook-обработчики ===
-
-async def ping(request):
-    return web.Response(text="pong")
-
-async def handle_webhook(request):
-    try:
-        req_data = await request.json()
-        update = Update.to_object(req_data)
-        Bot.set_current(bot)  # 🛠️ Устанавливаем bot перед обработкой update
-        await dp.process_update(update)
-        return web.Response()
-    except Exception as e:
-        logging.error(f"Ошибка обработки webhook: {e}")
-        return web.Response(status=500)
-
-# === Запуск ===
-
-async def on_startup(app):
-    await bot.set_webhook(WEBHOOK_URL + WEBHOOK_PATH)
+# Webhook
+async def on_startup(dp):
+    await bot.set_webhook(WEBHOOK_URL)
     asyncio.create_task(check_prices_loop())
 
-async def on_shutdown(app):
+async def on_shutdown(dp):
     await bot.delete_webhook()
 
-def main():
-    app = web.Application()
-    app.router.add_get("/ping", ping)
-    app.router.add_post(WEBHOOK_PATH, handle_webhook)
-    app.on_startup.append(on_startup)
-    app.on_shutdown.append(on_shutdown)
-
-    web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
-
 if __name__ == "__main__":
-    main()
+    start_webhook(
+        dispatcher=dp,
+        webhook_path=WEBHOOK_PATH,
+        on_startup=on_startup,
+        on_shutdown=on_shutdown,
+        host=WEBAPP_HOST,
+        port=WEBAPP_PORT,
+    )
