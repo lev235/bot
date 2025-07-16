@@ -14,8 +14,8 @@ logging.basicConfig(level=logging.INFO)
 
 # === Константы ===
 API_TOKEN = os.getenv("BOT_TOKEN")
-ADMIN_ID = int(os.getenv("ADMIN_ID", 123456789))  # замените на ваш Telegram ID
-WEBHOOK_HOST = os.getenv("WEBHOOK_HOST")  # например, https://your-app.onrender.com
+ADMIN_ID = int(os.getenv("ADMIN_ID", 6882817679))  # замените на ваш Telegram ID
+WEBHOOK_HOST = os.getenv("https://bot-ulgt.onrender.com")  # например, https://your-app.onrender.com
 WEBHOOK_PATH = "/webhook"
 WEBHOOK_URL = f"{WEBHOOK_HOST}{WEBHOOK_PATH}"
 WEBAPP_HOST = "0.0.0.0"
