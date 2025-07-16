@@ -4,13 +4,14 @@ import asyncio
 from datetime import datetime
 
 from aiogram import Bot, Dispatcher, types
-from aiogram.types import InputFile
+from aiogram.contrib.middlewares.logging import LoggingMiddleware
+from aiogram.types import Update
 from aiogram.utils.executor import start_webhook
 
 import gspread
 import aiohttp
-from google.oauth2.service_account import Credentials
 from aiohttp import web
+from google.oauth2.service_account import Credentials
 
 # === Настройки ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -29,6 +30,7 @@ logging.basicConfig(level=logging.INFO)
 # === Бот и диспетчер ===
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
+dp.middleware.setup(LoggingMiddleware())
 
 # === Google Sheets ===
 GC = gspread.service_account(filename="credentials.json")
@@ -144,9 +146,9 @@ async def check_prices_loop():
                     logging.error(f"[Цикл] Ошибка для строки {idx}: {e}")
         except Exception as e:
             logging.critical(f"[Цикл] Общая ошибка: {e}")
-        await asyncio.sleep(60 * 30)  # каждые 30 минут
+        await asyncio.sleep(60 * 30)
 
-# === Webhook / ping ===
+# === Webhook ===
 
 async def on_startup(dp):
     await bot.set_webhook(WEBHOOK_URL + WEBHOOK_PATH)
@@ -155,14 +157,24 @@ async def on_startup(dp):
 async def on_shutdown(dp):
     await bot.delete_webhook()
 
+# === Web Server ===
+
 async def ping(request):
     return web.Response(text="pong")
 
-def run_app():
-    app = web.Application()
-    app.router.add_get("/ping", ping)
-    app.router.add_post(WEBHOOK_PATH, lambda req: dp.process_updates(req))
-    return app
+async def handle_webhook(request):
+    try:
+        req_data = await request.json()
+        update = Update.to_object(req_data)
+        await dp.process_update(update)
+        return web.Response()
+    except Exception as e:
+        logging.error(f"Ошибка обработки webhook: {e}")
+        return web.Response(status=500)
+
+app = web.Application()
+app.router.add_get("/ping", ping)
+app.router.add_post(WEBHOOK_PATH, handle_webhook)
 
 if __name__ == "__main__":
     start_webhook(
@@ -173,4 +185,5 @@ if __name__ == "__main__":
         skip_updates=True,
         host=WEBAPP_HOST,
         port=WEBAPP_PORT,
+        web_app=app,
     )
