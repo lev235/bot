@@ -6,7 +6,6 @@ from datetime import datetime
 from aiogram import Bot, Dispatcher, types
 from aiogram.contrib.middlewares.logging import LoggingMiddleware
 from aiogram.types import Update
-from aiogram.utils.executor import start_webhook
 
 import gspread
 import aiohttp
@@ -17,7 +16,7 @@ from google.oauth2.service_account import Credentials
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = int(os.getenv("ADMIN_ID"))
 SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
-WEBHOOK_URL = os.getenv("WEBHOOK_URL")
+WEBHOOK_URL = os.getenv("WEBHOOK_URL")         # https://your-app.onrender.com
 WEBHOOK_PATH = "/webhook"
 WEBAPP_HOST = "0.0.0.0"
 WEBAPP_PORT = int(os.getenv("PORT", 8000))
@@ -27,7 +26,7 @@ WB_API_URL = "https://card.wb.ru/cards/detail"
 # === Логгирование ===
 logging.basicConfig(level=logging.INFO)
 
-# === Бот и диспетчер ===
+# === Инициализация бота ===
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 dp.middleware.setup(LoggingMiddleware())
@@ -148,16 +147,7 @@ async def check_prices_loop():
             logging.critical(f"[Цикл] Общая ошибка: {e}")
         await asyncio.sleep(60 * 30)
 
-# === Webhook ===
-
-async def on_startup(dp):
-    await bot.set_webhook(WEBHOOK_URL + WEBHOOK_PATH)
-    asyncio.create_task(check_prices_loop())
-
-async def on_shutdown(dp):
-    await bot.delete_webhook()
-
-# === Web Server ===
+# === Webhook-обработчики ===
 
 async def ping(request):
     return web.Response(text="pong")
@@ -172,18 +162,23 @@ async def handle_webhook(request):
         logging.error(f"Ошибка обработки webhook: {e}")
         return web.Response(status=500)
 
-app = web.Application()
-app.router.add_get("/ping", ping)
-app.router.add_post(WEBHOOK_PATH, handle_webhook)
+# === Запуск ===
+
+async def on_startup(app):
+    await bot.set_webhook(WEBHOOK_URL + WEBHOOK_PATH)
+    asyncio.create_task(check_prices_loop())
+
+async def on_shutdown(app):
+    await bot.delete_webhook()
+
+def main():
+    app = web.Application()
+    app.router.add_get("/ping", ping)
+    app.router.add_post(WEBHOOK_PATH, handle_webhook)
+    app.on_startup.append(on_startup)
+    app.on_shutdown.append(on_shutdown)
+
+    web.run_app(app, host=WEBAPP_HOST, port=WEBAPP_PORT)
 
 if __name__ == "__main__":
-    start_webhook(
-        dispatcher=dp,
-        webhook_path=WEBHOOK_PATH,
-        on_startup=on_startup,
-        on_shutdown=on_shutdown,
-        skip_updates=True,
-        host=WEBAPP_HOST,
-        port=WEBAPP_PORT,
-        web_app=app,
-    )
+    main()
