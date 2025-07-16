@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.INFO)
 
 # === Google Sheets ===
 scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
-creds = ServiceAccountCredentials.from_json_keyfile_name("creds.json", scope)
+creds = ServiceAccountCredentials.from_json_keyfile_name("credentials.json", scope)
 client = gspread.authorize(creds)
 SHEET = client.open("WB Price Tracker").sheet1  # создайте вручную с заголовками: user_id, article, target_price, current_price, updated_at
 
