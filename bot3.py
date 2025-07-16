@@ -8,8 +8,9 @@ from aiogram.types import InputFile
 from aiogram.utils.executor import start_webhook
 
 import gspread
-from google.oauth2.service_account import Credentials
 import aiohttp
+from google.oauth2.service_account import Credentials
+from aiohttp import web
 
 # === Настройки ===
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -22,12 +23,14 @@ WEBAPP_PORT = int(os.getenv("PORT", 8000))
 
 WB_API_URL = "https://card.wb.ru/cards/detail"
 
+# === Логгирование ===
+logging.basicConfig(level=logging.INFO)
+
 # === Бот и диспетчер ===
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(bot)
 
 # === Google Sheets ===
-SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 GC = gspread.service_account(filename="credentials.json")
 SHEET = GC.open_by_key(SPREADSHEET_ID).sheet1
 
@@ -42,46 +45,43 @@ async def add_product(message: types.Message):
     try:
         _, article, target = message.text.strip().split()
         target_price = float(target)
-    except:
+        await asyncio.to_thread(SHEET.append_row, [message.from_user.id, article, target_price, "", ""])
+        await message.reply(f"✅ Артикул {article} добавлен с целью {target_price} ₽")
+    except Exception:
         await message.reply("❗ Использование: /add <артикул> <целевая_цена>")
-        return
-    SHEET.append_row([message.from_user.id, article, target_price, "", ""])
-    await message.reply(f"✅ Артикул {article} добавлен с целью {target_price} ₽")
 
 @dp.message_handler(commands=["list"])
 async def list_products(message: types.Message):
-    user_id = str(message.from_user.id)
-    records = SHEET.get_all_records()
-    user_records = [r for r in records if str(r['user_id']) == user_id]
-    if not user_records:
-        await message.reply("🗃️ У вас нет добавленных товаров.")
-        return
-    reply = "📦 Ваши товары:\n\n"
-    for i, r in enumerate(user_records, 1):
-        reply += f"{i}. Артикул: {r['article']}, Цель: {r['target_price']} ₽, Последняя: {r.get('last_price', '-')}\n"
-    await message.reply(reply)
+    try:
+        user_id = str(message.from_user.id)
+        records = await asyncio.to_thread(SHEET.get_all_records)
+        user_records = [r for r in records if str(r['user_id']) == user_id]
+        if not user_records:
+            await message.reply("🗃️ У вас нет добавленных товаров.")
+            return
+        reply = "📦 Ваши товары:\n\n"
+        for i, r in enumerate(user_records, 1):
+            reply += f"{i}. Артикул: {r['article']}, Цель: {r['target_price']} ₽, Последняя: {r.get('last_price', '-')}\n"
+        await message.reply(reply)
+    except Exception as e:
+        logging.error(f"/list ошибка: {e}")
+        await message.reply("❗ Ошибка при получении списка товаров.")
 
 @dp.message_handler(commands=["remove"])
 async def remove_product(message: types.Message):
     try:
         _, article = message.text.strip().split()
-    except:
-        await message.reply("❗ Использование: /remove <артикул>")
-        return
-    user_id = str(message.from_user.id)
-    data = SHEET.get_all_values()
-    header = data[0]
-    rows = data[1:]
-    found = False
-    for i, row in enumerate(rows, start=2):
-        if row[0] == user_id and row[1] == article:
-            SHEET.delete_rows(i)
-            found = True
-            break
-    if found:
-        await message.reply(f"🗑️ Артикул {article} удалён.")
-    else:
+        user_id = str(message.from_user.id)
+        data = await asyncio.to_thread(SHEET.get_all_values)
+        rows = data[1:]
+        for i, row in enumerate(rows, start=2):
+            if row[0] == user_id and row[1] == article:
+                await asyncio.to_thread(SHEET.delete_rows, i)
+                await message.reply(f"🗑️ Артикул {article} удалён.")
+                return
         await message.reply(f"🚫 Артикул {article} не найден.")
+    except Exception:
+        await message.reply("❗ Использование: /remove <артикул>")
 
 @dp.message_handler(commands=["broadcast"])
 async def broadcast_cmd(message: types.Message):
@@ -90,29 +90,34 @@ async def broadcast_cmd(message: types.Message):
     if not message.reply_to_message:
         await message.reply("Команда должна быть ответом на сообщение.")
         return
+
     reply = message.reply_to_message
     text = reply.text or reply.caption or ""
-    records = SHEET.get_all_records()
-    user_ids = list(set(str(r["user_id"]) for r in records))
-    for uid in user_ids:
-        try:
-            if reply.photo:
-                await bot.send_photo(uid, reply.photo[-1].file_id, caption=text)
-            elif reply.video:
-                await bot.send_video(uid, reply.video.file_id, caption=text)
-            elif text:
-                await bot.send_message(uid, text)
-        except Exception as e:
-            logging.warning(f"Ошибка рассылки пользователю {uid}: {e}")
-    await message.reply("📣 Рассылка отправлена.")
+    try:
+        records = await asyncio.to_thread(SHEET.get_all_records)
+        user_ids = list(set(str(r["user_id"]) for r in records))
+        for uid in user_ids:
+            try:
+                if reply.photo:
+                    await bot.send_photo(uid, reply.photo[-1].file_id, caption=text)
+                elif reply.video:
+                    await bot.send_video(uid, reply.video.file_id, caption=text)
+                elif text:
+                    await bot.send_message(uid, text)
+            except Exception as e:
+                logging.warning(f"Ошибка рассылки пользователю {uid}: {e}")
+        await message.reply("📣 Рассылка отправлена.")
+    except Exception as e:
+        logging.error(f"[broadcast] Ошибка рассылки: {e}")
+        await message.reply("❗ Ошибка при рассылке.")
 
-# === Цикл проверки цен ===
+# === Фоновая проверка цен ===
 
 async def check_prices_loop():
     await asyncio.sleep(5)
     while True:
         try:
-            records = SHEET.get_all_records()
+            records = await asyncio.to_thread(SHEET.get_all_records)
             for idx, rec in enumerate(records, start=2):
                 try:
                     user_id = int(rec['user_id'])
@@ -130,14 +135,18 @@ async def check_prices_loop():
                     if current <= target:
                         await bot.send_message(user_id, f"📉 Цена на {article} упала до {current} ₽ (цель: {target})")
 
-                    SHEET.update(f"D{idx}:E{idx}", [[current, datetime.utcnow().isoformat()]])
+                    await asyncio.to_thread(
+                        SHEET.update,
+                        f"D{idx}:E{idx}",
+                        [[current, datetime.utcnow().isoformat()]]
+                    )
                 except Exception as e:
                     logging.error(f"[Цикл] Ошибка для строки {idx}: {e}")
         except Exception as e:
             logging.critical(f"[Цикл] Общая ошибка: {e}")
         await asyncio.sleep(60 * 30)  # каждые 30 минут
 
-# === Webhook ===
+# === Webhook / ping ===
 
 async def on_startup(dp):
     await bot.set_webhook(WEBHOOK_URL + WEBHOOK_PATH)
@@ -146,8 +155,16 @@ async def on_startup(dp):
 async def on_shutdown(dp):
     await bot.delete_webhook()
 
+async def ping(request):
+    return web.Response(text="pong")
+
+def run_app():
+    app = web.Application()
+    app.router.add_get("/ping", ping)
+    app.router.add_post(WEBHOOK_PATH, lambda req: dp.process_updates(req))
+    return app
+
 if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
     start_webhook(
         dispatcher=dp,
         webhook_path=WEBHOOK_PATH,
