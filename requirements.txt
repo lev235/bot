@@ -2,3 +2,4 @@ aiogram==2.25.2
 aiohttp
 gspread
 oauth2client
+dotenv
