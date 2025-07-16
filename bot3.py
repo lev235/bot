@@ -186,7 +186,7 @@ async def check_prices_loop():
                     logging.warning(f"Ошибка на строке {idx}: {e}")
         except Exception as e:
             logging.error(f"Ошибка основного цикла: {e}")
-        await asyncio.sleep(1800)  # каждые 30 минут
+        await asyncio.sleep(60)  # каждые 30 минут
 
 # === Webhook setup ===
 async def on_startup(dp):
